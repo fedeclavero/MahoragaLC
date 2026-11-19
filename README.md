@@ -32,7 +32,7 @@ Unity -batchmode -nographics -projectPath UnityProject -executeMethod MahoragaAs
 Por derechos de terceros, quedan fuera de git (hay que conseguirlos localmente):
 
 - Los DLL del juego y de terceros en `UnityProject/Assets/Plugins/` (se copian desde `Lethal Company_Data/Managed/` y del perfil de BepInEx).
-- Los scripts del juego en `UnityProject/Assets/Scripts/Assembly-CSharp/` (se regeneran con el Lethal Company Project Patcher; los `.meta` sí están versionados para conservar los GUID).
+- Los scripts del juego en `UnityProject/Assets/Scripts/Assembly-CSharp/` (se regeneran con el Lethal Company Project Patcher; los `.meta` sí están versionados para conservar los GUID). Tienen que coincidir con la versión actual del juego (v81): en particular `IVisibleThreat` debe declarar `GetHeldObject()` e `IsThreatDead()` y `ThreatType` debe incluir `GiantKiwi = 9`; si no, Unity no puede cargar `MahoragaAI` y el build del AssetBundle falla con `TypeLoadException`.
 - El código decompilado de referencia (`docs/re/`).
 - La música `mahoraga_music_main.ogg`. El mod admite música propia en la carpeta `CustomMusic/`.
 
