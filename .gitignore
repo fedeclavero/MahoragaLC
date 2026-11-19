@@ -1,0 +1,32 @@
+# Unity
+UnityProject/Library/
+UnityProject/Logs/
+UnityProject/Temp/
+UnityProject/obj/
+UnityProject/UserSettings/
+UnityProject/AssetBundles/
+UnityProject/build*.log
+# .NET
+Plugin/bin/
+Plugin/obj/
+Plugin/Tests/bin/
+Plugin/Tests/obj/
+Plugin/Thunderstore/Packages/
+# Salidas y cachés
+dist/
+artifacts/
+tools/.venv/
+tools/thunderstore-cache/
+tools/LC-ExampleEnemy-ref/
+assets/audio/source/
+assets/model/refs/
+*.blend1
+*.blend2
+# Worktrees de trabajo
+.worktrees/
+# No publicable: binarios y código del juego, material con derechos de terceros
+UnityProject/Assets/Plugins/*.dll
+UnityProject/Assets/Scripts/Assembly-CSharp/*.cs
+docs/re/
+assets/audio/mahoraga_music_main.ogg
+UnityProject/Assets/MahoragaMod/Audio/mahoraga_music_main.ogg

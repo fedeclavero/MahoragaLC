@@ -1,0 +1,86 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- BepInEx & Thunderstore Metadata -->
+  <PropertyGroup>
+    <AssemblyName>Fede.MahoragaLC</AssemblyName>
+    <Product>MahoragaLC</Product>
+    <Version>1.0.0</Version>
+    <ThunderstoreTeam>Fede</ThunderstoreTeam>
+    <Description>Eight-Handled Sword Divergent Sila Divine General Mahoraga apex enemy mod for Lethal Company.</Description>
+  </PropertyGroup>
+
+  <!-- Target Framework & Compiler Settings -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <RootNamespace>MahoragaLC</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <NoWarn>$(NoWarn);CS0436;MSB3277</NoWarn>
+  </PropertyGroup>
+
+  <!-- Paths to Live Steam Lethal Company & MahoragaDev LethalLib -->
+  <PropertyGroup>
+    <ManagedDirectory Condition="'$(ManagedDirectory)' == ''">/mnt/HDD_1TB/SteamLibrary/steamapps/common/Lethal Company/Lethal Company_Data/Managed/</ManagedDirectory>
+    <LethalLibPath Condition="'$(LethalLibPath)' == ''">/home/fede/.config/r2modmanPlus-local/LethalCompany/profiles/MahoragaDev/BepInEx/plugins/Evaisa-LethalLib/LethalLib/LethalLib.dll</LethalLibPath>
+  </PropertyGroup>
+
+  <!-- NuGet Sources -->
+  <PropertyGroup>
+    <RestoreAdditionalProjectSources>
+      https://api.nuget.org/v3/index.json;
+      https://nuget.bepinex.dev/v3/index.json
+    </RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <!-- Embedded Portable Debug Symbols -->
+  <PropertyGroup>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>embedded</DebugType>
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))=./</PathMap>
+  </PropertyGroup>
+
+  <!-- Exclude unit test project files from plugin compilation -->
+  <ItemGroup>
+    <Compile Remove="Tests/**" />
+    <EmbeddedResource Remove="Tests/**" />
+    <None Remove="Tests/**" />
+  </ItemGroup>
+
+  <!-- BepInEx & Publicizer Packages -->
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Analyzers" Version="1.*" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Core" Version="5.*" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.*" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Live Lethal Company (Unity 2022.3.62f2 / NGO 1.12.2) & LethalLib 1.2.0 References -->
+  <ItemGroup>
+    <Reference Include="$(ManagedDirectory)Assembly-CSharp.dll" Publicize="true" Private="false" />
+    <Reference Include="$(ManagedDirectory)Assembly-CSharp-firstpass.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)Unity.Netcode.Runtime.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)Unity.Netcode.Components.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.CoreModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.AIModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.AnimationModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.AssetBundleModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.AudioModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.UnityWebRequestModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.UnityWebRequestAudioModule.dll" Private="false" />
+    <Reference Include="$(LethalLibPath)" Private="false" />
+  </ItemGroup>
+
+  <!-- NetcodePatcher IL Weaving (Unity 2022.3.62, NGO 1.12.2) -->
+  <Target Name="NetcodePatch" AfterTargets="PostBuildEvent">
+    <Exec Command="dotnet netcode-patch -uv 2022.3.62 -nv 1.12.2 -tv 1.0.0 &quot;$(TargetPath)&quot; @(ReferencePathWithRefAssemblies->'&quot;%(Identity)&quot;', ' ')" />
+  </Target>
+
+  <!-- Thunderstore Package Build on Release -->
+  <Target Name="PackThunderstore" DependsOnTargets="NetcodePatch" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' == 'Release' AND Exists('$(ProjectDir)Thunderstore/thunderstore.toml')">
+    <Exec Command="dotnet tcli build --config-path &quot;$(ProjectDir)Thunderstore/thunderstore.toml&quot; --package-version $(Version) --package-name $(Product) --package-namespace $(ThunderstoreTeam)" />
+  </Target>
+
+</Project>
