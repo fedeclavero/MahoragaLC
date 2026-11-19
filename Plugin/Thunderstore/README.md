@@ -68,3 +68,10 @@ Generated automatically on first launch:
 To swap the bundled theme with your own `.ogg`, `.wav`, or `.mp3` track:
 1. Set `UseCustomMusicOverride = true` in `BepInEx/config/Fede.MahoragaLC.cfg`.
 2. Create a folder named `CustomMusic` next to `Fede.MahoragaLC.dll` (`BepInEx/plugins/Fede-MahoragaLC/CustomMusic/`) and place your audio file inside.
+
+---
+
+## Credits
+
+- **Boss theme:** "「Sukuna vs Mahoraga」(Malevolent Shrine) Jujutsu Kaisen S2 EP17 OST [Epic Cover]" by **Pharozen** ([YouTube](https://www.youtube.com/watch?v=vxTLtmpnKn8) · [channel](https://www.youtube.com/@pharozen)), a cover of the *Jujutsu Kaisen* Season 2 original soundtrack. Used in-game from `0:51` onward. All rights belong to their respective owners; if you are the author and want it removed, open an issue at https://github.com/fedeclavero/MahoragaLC and it will be replaced.
+- **Mahoraga** and *Jujutsu Kaisen* belong to Gege Akutami, Shueisha and MAPPA. *Lethal Company* belongs to Zeekerss. This is a non-commercial fan project, not affiliated with any of them.
