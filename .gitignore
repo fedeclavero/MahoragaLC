@@ -30,3 +30,5 @@ UnityProject/Assets/Scripts/Assembly-CSharp/*.cs
 docs/re/
 assets/audio/mahoraga_music_main.ogg
 UnityProject/Assets/MahoragaMod/Audio/mahoraga_music_main.ogg
+# Notas de traspaso entre sesiones (locales)
+sesión*.md
