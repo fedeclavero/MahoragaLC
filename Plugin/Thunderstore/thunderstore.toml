@@ -9,7 +9,7 @@ namespace = "Fede"
 name = "MahoragaLC"
 versionNumber = "1.0.0"
 description = "Adds Eight-Handled Sword Divergent Sila Divine General Mahoraga as an adapting apex boss enemy for Lethal Company with dynamic proximity music."
-websiteUrl = "https://github.com/Fede/MahoragaLC"
+websiteUrl = "https://github.com/fedeclavero/MahoragaLC"
 containsNsfwContent = false
 
 [package.dependencies]
