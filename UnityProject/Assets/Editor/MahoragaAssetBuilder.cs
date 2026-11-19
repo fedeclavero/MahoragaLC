@@ -39,7 +39,9 @@ public static class MahoragaAssetBuilder
     private const string MapDotMatPath = MaterialsDir + "/MapDot_Mat.mat";
     private const string AnimatorPath = AnimationsDir + "/MahoragaAnimator.controller";
     private const string PrefabPath = PrefabsDir + "/MahoragaPrefab.prefab";
+    private const string OutdoorPrefabPath = PrefabsDir + "/MahoragaPrefab_Outside.prefab";
     private const string EnemyTypePath = DataDir + "/MahoragaEnemyType.asset";
+    private const string OutdoorEnemyTypePath = DataDir + "/MahoragaEnemyType_Outside.asset";
     private const string TerminalNodePath = DataDir + "/MahoragaTerminalNode.asset";
     private const string TerminalKeywordPath = DataDir + "/MahoragaTerminalKeyword.asset";
     private const string ShadowPoolMatPath = MaterialsDir + "/ShadowPool_Mat.mat";
@@ -47,6 +49,11 @@ public static class MahoragaAssetBuilder
     private const string DiageticMixerPath = "Assets/AudioMixerController/Diagetic.mixer";
 
     private const string BundleOutputDir = "AssetBundles/StandaloneWindows64";
+
+    private const uint IndoorGlobalObjectIdHash = 2847193651u;
+    private const uint OutdoorGlobalObjectIdHash = 2847193652u;
+    private const int IndoorWalkableMask = 9753;
+    private const int OutdoorWalkableMask = 14873;
 
     private static readonly string[] RequiredClips =
     {
@@ -60,11 +67,23 @@ public static class MahoragaAssetBuilder
         "Death"
     };
 
-    // Optional clip: the animator agent adds the "Summon_Emerge" action to Mahoraga.fbx later. Until then the
-    // Summon_Emerge animator state plays FallbackSummonClip (so the build never breaks).
+    private static readonly string[] ExpectedBehaviourStateNames =
+    {
+        "Patrolling",
+        "Investigating",
+        "Chasing",
+        "Attacking",
+        "Adapting",
+        "Summoning",
+        "EngagingEnemy",
+        "Submerging"
+    };
+
     private const string SummonClipName = "Summon_Emerge";
+    private const string SubmergeClipName = "Summon_Submerge";
     private const string FallbackSummonClip = "Adapt_WheelSpin";
     private static bool _hasRealSummonClip;
+    private static bool _hasRealSubmergeClip;
 
     private static readonly HashSet<string> LoopingClips = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -303,6 +322,7 @@ third shell did nothing. Leave the scrap. Run.""
         importer.meshCompression = ModelImporterMeshCompression.Off;
         importer.optimizeMeshPolygons = false;
         importer.optimizeMeshVertices = false;
+        importer.clipAnimations = Array.Empty<ModelImporterClipAnimation>();
         importer.SaveAndReimport();
 
         ModelImporterClipAnimation[] defaults = importer.defaultClipAnimations;
@@ -321,7 +341,7 @@ third shell did nothing. Leave the scrap. Run.""
                 cleanName = cleanName.Substring(pipeIdx + 1);
             }
 
-            if (!RequiredClips.Contains(cleanName) && cleanName != SummonClipName)
+            if (!RequiredClips.Contains(cleanName) && cleanName != SummonClipName && cleanName != SubmergeClipName)
             {
                 Debug.LogWarning($"[MAHORAGA-BUILD] Skipping unexpected clip '{def.name}' (normalized '{cleanName}').");
                 continue;
@@ -379,11 +399,25 @@ third shell did nothing. Leave the scrap. Run.""
             {
                 throw new Exception($"AnimationClip '{SummonClipName}' must not loop.");
             }
-            Debug.Log($"[MAHORAGA-BUILD] Optional clip '{SummonClipName}' found in the FBX: length={loadedClips[SummonClipName].length:F3}s.");
+            Debug.Log($"[MAHORAGA-BUILD] Clip '{SummonClipName}' found in the FBX: length={loadedClips[SummonClipName].length:F3}s.");
         }
         else
         {
-            Debug.LogWarning($"[MAHORAGA-BUILD] Optional clip '{SummonClipName}' is NOT in the FBX; the Summon_Emerge state falls back to '{FallbackSummonClip}'.");
+            throw new Exception($"Required AnimationClip '{SummonClipName}' missing from '{FbxPath}'! Found: {string.Join(", ", loadedClips.Keys)}");
+        }
+
+        _hasRealSubmergeClip = loadedClips.ContainsKey(SubmergeClipName);
+        if (_hasRealSubmergeClip)
+        {
+            if (loadedClips[SubmergeClipName].isLooping)
+            {
+                throw new Exception($"AnimationClip '{SubmergeClipName}' must not loop.");
+            }
+            Debug.Log($"[MAHORAGA-BUILD] Clip '{SubmergeClipName}' found in the FBX: length={loadedClips[SubmergeClipName].length:F3}s.");
+        }
+        else
+        {
+            throw new Exception($"Required AnimationClip '{SubmergeClipName}' missing from '{FbxPath}'! Found: {string.Join(", ", loadedClips.Keys)}");
         }
 
         return loadedClips;
@@ -517,6 +551,13 @@ third shell did nothing. Leave the scrap. Run.""
             type = AnimatorControllerParameterType.Float,
             defaultFloat = 1.0f
         });
+        controller.AddParameter("Submerge", AnimatorControllerParameterType.Trigger);
+        controller.AddParameter(new AnimatorControllerParameter
+        {
+            name = "SubmergeSpeed",
+            type = AnimatorControllerParameterType.Float,
+            defaultFloat = 1.0f
+        });
 
         AnimatorStateMachine sm = controller.layers[0].stateMachine;
 
@@ -550,6 +591,12 @@ third shell did nothing. Leave the scrap. Run.""
         summonState.motion = clips.TryGetValue(SummonClipName, out AnimationClip summonClip) ? summonClip : clips[FallbackSummonClip];
         summonState.speedParameterActive = true;
         summonState.speedParameter = "SummonSpeed";
+
+        // Summon_Submerge: downward shadow dive state driven by SubmergeSpeed.
+        AnimatorState submergeState = sm.AddState("Summon_Submerge", new Vector3(500, -280, 0));
+        submergeState.motion = clips.TryGetValue(SubmergeClipName, out AnimationClip submergeClip) ? submergeClip : clips[FallbackSummonClip];
+        submergeState.speedParameterActive = true;
+        submergeState.speedParameter = "SubmergeSpeed";
 
         // Locomotion transitions (ASSET_CONTRACT.md §4.3)
         // Idle -> Walk: Speed > 0.25 && IsChasing == false (0.15s)
@@ -618,6 +665,15 @@ third shell did nothing. Leave the scrap. Run.""
         var tSummonToIdle = summonState.AddTransition(idleState);
         ConfigureExitTimeTransition(tSummonToIdle, 0.95f, 0.10f);
 
+        // 2c. Any State -> Summon_Submerge: Submerge trigger && !IsDead (0.10s; exit 0.95 -> Idle). Speed = SubmergeSpeed.
+        var tAnyToSubmerge = sm.AddAnyStateTransition(submergeState);
+        ConfigureAnyStateTransition(tAnyToSubmerge, 0.10f);
+        tAnyToSubmerge.AddCondition(AnimatorConditionMode.If, 0f, "Submerge");
+        tAnyToSubmerge.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsDead");
+
+        var tSubmergeToIdle = submergeState.AddTransition(idleState);
+        ConfigureExitTimeTransition(tSubmergeToIdle, 0.95f, 0.10f);
+
         // 3. Any State -> Stun: IsStunned && !IsDead (0.10s; exit to Idle when !IsStunned)
         var tAnyToStun = sm.AddAnyStateTransition(stunState);
         ConfigureAnyStateTransition(tAnyToStun, 0.10f);
@@ -650,7 +706,7 @@ third shell did nothing. Leave the scrap. Run.""
 
         EditorUtility.SetDirty(controller);
         AssetDatabase.SaveAssets();
-        Debug.Log("[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 9 parameters and 9 states (Summon_Emerge uses " + (_hasRealSummonClip ? SummonClipName : FallbackSummonClip + " as fallback") + ").");
+        Debug.Log($"[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 11 parameters and 10 states (Summon_Emerge real clip={_hasRealSummonClip}, Summon_Submerge real clip={_hasRealSubmergeClip}).");
         return controller;
     }
 
@@ -690,9 +746,11 @@ third shell did nothing. Leave the scrap. Run.""
     {
         // Delete existing assets so rebuilds are 100% deterministic
         DeleteIfExists(EnemyTypePath);
+        DeleteIfExists(OutdoorEnemyTypePath);
         DeleteIfExists(TerminalNodePath);
         DeleteIfExists(TerminalKeywordPath);
         DeleteIfExists(PrefabPath);
+        DeleteIfExists(OutdoorPrefabPath);
 
         // 1. TerminalNode (TERMINAL_BESTIARY.md §1.2 & §2 — explicit -1 defaults for v73!)
         var terminalNode = ScriptableObject.CreateInstance<TerminalNode>();
@@ -721,48 +779,26 @@ third shell did nothing. Leave the scrap. Run.""
         terminalKeyword.accessTerminalObjects = false;
         AssetDatabase.CreateAsset(terminalKeyword, TerminalKeywordPath);
 
-        // 3. EnemyType (ASSET_CONTRACT.md §8 + #15 fixes: hitBodySFX/hitEnemyVoiceSFX/deathSFX = null)
-        var enemyType = ScriptableObject.CreateInstance<EnemyType>();
-        enemyType.name = "MahoragaEnemyType";
-        enemyType.enemyName = "Mahoraga";
-        enemyType.PowerLevel = 3f;
-        enemyType.DiversityPowerLevel = 0;
-        enemyType.MaxCount = 1;
-        enemyType.isOutsideEnemy = false;
-        enemyType.isDaytimeEnemy = false;
-        enemyType.increasedChanceInterior = -1;
-        enemyType.normalizedTimeInDayToLeave = 1f;
-        enemyType.canDie = true;
-        enemyType.canBeDestroyed = false;
-        enemyType.destroyOnDeath = false;
-        enemyType.canBeStunned = true;
-        enemyType.canSeeThroughFog = true;
-        enemyType.disableAnimatorWhenFar = false;
-        enemyType.stunTimeMultiplier = 1.0f;
-        enemyType.doorSpeedMultiplier = 1.5f;
-        enemyType.stunGameDifficultyMultiplier = 1.0f;
-        enemyType.probabilityCurve = AnimationCurve.Constant(0f, 1f, 1f);
-        enemyType.numberSpawnedFalloff = AnimationCurve.Linear(0f, 1f, 1f, 0f);
-        enemyType.useNumberSpawnedFalloff = true;
-        enemyType.spawningDisabled = false;
-        enemyType.pushPlayerForce = 0.25f;
-        enemyType.pushPlayerDistance = 1.40f;
-        enemyType.SizeLimit = NavSizeLimit.NoLimit;
-        enemyType.EnemySize = EnemySize.Giant;
-        enemyType.WaterType = EnemyWaterType.LandOnly;
-        enemyType.timeToPlayAudio = 15f;
-        enemyType.loudnessMultiplier = 1f;
-        enemyType.nestSpawnPrefabWidth = 2f;
-        enemyType.nestDistanceFromShip = -1f;
-        // Per #14/#15 QA fix: null on EnemyType so MahoragaAudioController owns all SFX cleanly without double-play or null-clip warnings.
-        enemyType.hitBodySFX = null;
-        enemyType.hitEnemyVoiceSFX = null;
-        enemyType.deathSFX = null;
-        enemyType.stunSFX = null;
-        enemyType.overrideVentSFX = null;
-        enemyType.miscAnimations = Array.Empty<MiscAnimation>();
-        enemyType.audioClips = Array.Empty<AudioClip>();
-        AssetDatabase.CreateAsset(enemyType, EnemyTypePath);
+        // 3a. Indoor EnemyType (MahoragaEnemyType)
+        EnemyType indoorEnemyType = CreateMahoragaEnemyTypeAsset(
+            assetName: "MahoragaEnemyType",
+            assetPath: EnemyTypePath,
+            isOutsideEnemy: false,
+            sizeLimit: NavSizeLimit.SmallSpaces,
+            waterType: EnemyWaterType.LandOnly,
+            probabilityCurve: AnimationCurve.Constant(0f, 1f, 1f));
+
+        // 3b. Outdoor EnemyType (MahoragaEnemyType_Outside)
+        EnemyType outdoorEnemyType = CreateMahoragaEnemyTypeAsset(
+            assetName: "MahoragaEnemyType_Outside",
+            assetPath: OutdoorEnemyTypePath,
+            isOutsideEnemy: true,
+            sizeLimit: NavSizeLimit.MediumSpaces,
+            waterType: EnemyWaterType.Amphibious,
+            probabilityCurve: new AnimationCurve(
+                new Keyframe(0f, 0.35f),
+                new Keyframe(0.5f, 0.8f),
+                new Keyframe(1.0f, 1.0f)));
 
         // Load Diagetic AudioMixer -> SFX group
         AudioMixer diageticMixer = AssetDatabase.LoadAssetAtPath<AudioMixer>(DiageticMixerPath);
@@ -777,8 +813,124 @@ third shell did nothing. Leave the scrap. Run.""
         }
         AudioMixerGroup diageticSfxGroup = sfxGroups[0];
 
-        // 4. Construct MahoragaPrefab hierarchy (ASSET_CONTRACT.md §7.2)
-        GameObject root = new GameObject("MahoragaPrefab");
+        // 4a. Construct Indoor MahoragaPrefab
+        GameObject savedIndoorPrefab = BuildMahoragaPrefabVariant(
+            prefabName: "MahoragaPrefab",
+            prefabAssetPath: PrefabPath,
+            enemyType: indoorEnemyType,
+            globalObjectIdHash: IndoorGlobalObjectIdHash,
+            agentRadius: 0.55f,
+            agentStoppingDistance: 0.35f,
+            obstacleAvoidanceType: ObstacleAvoidanceType.MedQualityObstacleAvoidance,
+            walkableMask: IndoorWalkableMask,
+            audioClips: audioClips,
+            mahoragaMat: mahoragaMat,
+            mapDotMat: mapDotMat,
+            shadowPoolMat: shadowPoolMat,
+            shadowPoolMesh: shadowPoolMesh,
+            animatorController: animatorController,
+            diageticSfxGroup: diageticSfxGroup);
+
+        // 4b. Construct Outdoor MahoragaPrefab_Outside
+        GameObject savedOutdoorPrefab = BuildMahoragaPrefabVariant(
+            prefabName: "MahoragaPrefab_Outside",
+            prefabAssetPath: OutdoorPrefabPath,
+            enemyType: outdoorEnemyType,
+            globalObjectIdHash: OutdoorGlobalObjectIdHash,
+            agentRadius: 0.85f,
+            agentStoppingDistance: 0.50f,
+            obstacleAvoidanceType: ObstacleAvoidanceType.HighQualityObstacleAvoidance,
+            walkableMask: OutdoorWalkableMask,
+            audioClips: audioClips,
+            mahoragaMat: mahoragaMat,
+            mapDotMat: mapDotMat,
+            shadowPoolMat: shadowPoolMat,
+            shadowPoolMesh: shadowPoolMesh,
+            animatorController: animatorController,
+            diageticSfxGroup: diageticSfxGroup);
+
+        // Wire EnemyType.enemyPrefab to the respective saved prefab assets
+        indoorEnemyType.enemyPrefab = savedIndoorPrefab;
+        outdoorEnemyType.enemyPrefab = savedOutdoorPrefab;
+        EditorUtility.SetDirty(indoorEnemyType);
+        EditorUtility.SetDirty(outdoorEnemyType);
+        EditorUtility.SetDirty(terminalNode);
+        EditorUtility.SetDirty(terminalKeyword);
+        AssetDatabase.SaveAssets();
+        AssetDatabase.Refresh();
+        Debug.Log("[MAHORAGA-BUILD] Created MahoragaPrefab, MahoragaPrefab_Outside, MahoragaEnemyType, MahoragaEnemyType_Outside, MahoragaTerminalNode, MahoragaTerminalKeyword.");
+    }
+
+    private static EnemyType CreateMahoragaEnemyTypeAsset(
+        string assetName,
+        string assetPath,
+        bool isOutsideEnemy,
+        NavSizeLimit sizeLimit,
+        EnemyWaterType waterType,
+        AnimationCurve probabilityCurve)
+    {
+        var enemyType = ScriptableObject.CreateInstance<EnemyType>();
+        enemyType.name = assetName;
+        enemyType.enemyName = "Mahoraga";
+        enemyType.PowerLevel = 3f;
+        enemyType.DiversityPowerLevel = 0;
+        enemyType.MaxCount = 1;
+        enemyType.isOutsideEnemy = isOutsideEnemy;
+        enemyType.isDaytimeEnemy = false;
+        enemyType.increasedChanceInterior = -1;
+        enemyType.normalizedTimeInDayToLeave = 1f;
+        enemyType.canDie = true;
+        enemyType.canBeDestroyed = false;
+        enemyType.destroyOnDeath = false;
+        enemyType.canBeStunned = true;
+        enemyType.canSeeThroughFog = true;
+        enemyType.disableAnimatorWhenFar = false;
+        enemyType.stunTimeMultiplier = 1.0f;
+        enemyType.doorSpeedMultiplier = 1.5f;
+        enemyType.stunGameDifficultyMultiplier = 1.0f;
+        enemyType.probabilityCurve = probabilityCurve;
+        enemyType.numberSpawnedFalloff = AnimationCurve.Linear(0f, 1f, 1f, 0f);
+        enemyType.useNumberSpawnedFalloff = true;
+        enemyType.spawningDisabled = false;
+        enemyType.pushPlayerForce = 0.25f;
+        enemyType.pushPlayerDistance = 1.40f;
+        enemyType.SizeLimit = sizeLimit;
+        enemyType.EnemySize = EnemySize.Giant;
+        enemyType.WaterType = waterType;
+        enemyType.timeToPlayAudio = 15f;
+        enemyType.loudnessMultiplier = 1f;
+        enemyType.nestSpawnPrefabWidth = 2f;
+        enemyType.nestDistanceFromShip = -1f;
+        // Null on EnemyType so MahoragaAudioController owns all SFX cleanly without double-play or null-clip warnings.
+        enemyType.hitBodySFX = null;
+        enemyType.hitEnemyVoiceSFX = null;
+        enemyType.deathSFX = null;
+        enemyType.stunSFX = null;
+        enemyType.overrideVentSFX = null;
+        enemyType.miscAnimations = Array.Empty<MiscAnimation>();
+        enemyType.audioClips = Array.Empty<AudioClip>();
+        AssetDatabase.CreateAsset(enemyType, assetPath);
+        return enemyType;
+    }
+
+    private static GameObject BuildMahoragaPrefabVariant(
+        string prefabName,
+        string prefabAssetPath,
+        EnemyType enemyType,
+        uint globalObjectIdHash,
+        float agentRadius,
+        float agentStoppingDistance,
+        ObstacleAvoidanceType obstacleAvoidanceType,
+        int walkableMask,
+        Dictionary<string, AudioClip> audioClips,
+        Material mahoragaMat,
+        Material mapDotMat,
+        Material shadowPoolMat,
+        Mesh shadowPoolMesh,
+        AnimatorController animatorController,
+        AudioMixerGroup diageticSfxGroup)
+    {
+        GameObject root = new GameObject(prefabName);
         try
         {
             root.layer = 19; // Enemies
@@ -794,18 +946,27 @@ third shell did nothing. Leave the scrap. Run.""
 
             var navAgent = root.AddComponent<NavMeshAgent>();
             navAgent.agentTypeID = 0; // Humanoid
-            navAgent.radius = 0.60f;
+            navAgent.radius = agentRadius;
             navAgent.height = 3.30f;
             navAgent.baseOffset = 0.0f;
             navAgent.speed = 3.2f;
             navAgent.angularSpeed = 360f;
             navAgent.acceleration = 45f;
-            navAgent.stoppingDistance = 0.2f;
+            navAgent.stoppingDistance = agentStoppingDistance;
             navAgent.autoBraking = true;
             navAgent.autoRepath = true;
-            navAgent.autoTraverseOffMeshLink = true;
-            navAgent.obstacleAvoidanceType = ObstacleAvoidanceType.LowQualityObstacleAvoidance;
+            navAgent.autoTraverseOffMeshLink = false;
+            navAgent.obstacleAvoidanceType = obstacleAvoidanceType;
             navAgent.avoidancePriority = 50;
+            navAgent.areaMask = walkableMask;
+
+            var navInitSo = new SerializedObject(navAgent);
+            SerializedProperty walkableMaskInitProp = navInitSo.FindProperty("m_WalkableMask");
+            if (walkableMaskInitProp != null)
+            {
+                walkableMaskInitProp.intValue = walkableMask;
+                navInitSo.ApplyModifiedPropertiesWithoutUndo();
+            }
 
             var ai = root.AddComponent<MahoragaAI>();
             var audioCtrl = root.AddComponent<MahoragaAudioController>();
@@ -895,7 +1056,7 @@ third shell did nothing. Leave the scrap. Run.""
             eyeGo.transform.localPosition = new Vector3(0f, 2.98f, 0.35f);
             eyeGo.transform.localRotation = Quaternion.identity;
 
-            // CollisionCollider [Layer 19 (Enemies), Tag "Enemy"]
+            // CollisionCollider [Layer 19 (Enemies), Tag "Enemy", isTrigger = true]
             GameObject collisionGo = new GameObject("CollisionCollider");
             collisionGo.transform.SetParent(root.transform, false);
             collisionGo.transform.localPosition = Vector3.zero;
@@ -968,6 +1129,7 @@ third shell did nothing. Leave the scrap. Run.""
 
             // Wire inherited EnemyAI fields (ASSET_CONTRACT.md §7.3 + #15 fixes)
             ai.enemyType = enemyType;
+            ai.isOutside = enemyType.isOutsideEnemy;
             ai.skinnedMeshRenderers = smrs;
             ai.meshRenderers = Array.Empty<MeshRenderer>();
             ai.creatureAnimator = animator;
@@ -980,21 +1142,14 @@ third shell did nothing. Leave the scrap. Run.""
             ai.enemyHP = 18;
             ai.AIIntervalTime = 0.2f;
             ai.syncMovementSpeed = 0.22f;
-            ai.updatePositionThreshold = 1.0f;
+            ai.updatePositionThreshold = 0.40f;
             ai.moveTowardsDestination = true;
             ai.exitVentAnimationTime = 1.0f;
             ai.currentOwnershipOnThisClient = -1;
             ai.openDoorSpeedMultiplier = 1.5f;
-            ai.enemyBehaviourStates = new EnemyBehaviourState[]
-            {
-                new EnemyBehaviourState { name = "Patrolling" },
-                new EnemyBehaviourState { name = "Investigating" },
-                new EnemyBehaviourState { name = "Chasing" },
-                new EnemyBehaviourState { name = "Attacking" },
-                new EnemyBehaviourState { name = "Adapting" },
-                new EnemyBehaviourState { name = "Summoning" },
-                new EnemyBehaviourState { name = "EngagingEnemy" }
-            };
+            ai.enemyBehaviourStates = ExpectedBehaviourStateNames
+                .Select(stateName => new EnemyBehaviourState { name = stateName })
+                .ToArray();
 
             // Wire custom MahoragaAI fields
             ai.wheelBone = wheelBone;
@@ -1017,38 +1172,37 @@ third shell did nothing. Leave the scrap. Run.""
             audioCtrl.summonClip = audioClips["mahoraga_summon"];
 
             // Save prefab asset
-            GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(root, PrefabPath, out bool saveSuccess);
+            GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(root, prefabAssetPath, out bool saveSuccess);
             if (!saveSuccess || savedPrefab == null)
             {
-                throw new Exception($"Failed to save MahoragaPrefab at '{PrefabPath}'.");
+                throw new Exception($"Failed to save '{prefabName}' at '{prefabAssetPath}'.");
             }
 
-            // Ensure NetworkObject has a non-zero GlobalObjectIdHash on the saved prefab!
+            // Ensure deterministic non-zero GlobalObjectIdHash and m_WalkableMask on the saved prefab!
             NetworkObject savedNetObj = savedPrefab.GetComponent<NetworkObject>();
             var netSo = new SerializedObject(savedNetObj);
-            var hashProp = netSo.FindProperty("GlobalObjectIdHash");
-            if (hashProp != null && hashProp.longValue == 0)
+            SerializedProperty hashProp = netSo.FindProperty("GlobalObjectIdHash");
+            if (hashProp == null)
             {
-                // Deterministic non-zero uint hash for MahoragaPrefab
-                hashProp.longValue = 2847193651u;
-                netSo.ApplyModifiedPropertiesWithoutUndo();
-                EditorUtility.SetDirty(savedPrefab);
-                PrefabUtility.SavePrefabAsset(savedPrefab);
-                Debug.Log("[MAHORAGA-BUILD] Assigned deterministic GlobalObjectIdHash=2847193651 to MahoragaPrefab NetworkObject.");
+                throw new Exception($"Missing 'GlobalObjectIdHash' property on '{prefabName}' NetworkObject.");
             }
-            else if (hashProp != null)
-            {
-                Debug.Log($"[MAHORAGA-BUILD] MahoragaPrefab NetworkObject GlobalObjectIdHash={hashProp.longValue}.");
-            }
+            hashProp.longValue = globalObjectIdHash;
+            netSo.ApplyModifiedPropertiesWithoutUndo();
 
-            // Wire EnemyType.enemyPrefab to the saved prefab asset
-            enemyType.enemyPrefab = savedPrefab;
-            EditorUtility.SetDirty(enemyType);
-            EditorUtility.SetDirty(terminalNode);
-            EditorUtility.SetDirty(terminalKeyword);
-            AssetDatabase.SaveAssets();
-            AssetDatabase.Refresh();
-            Debug.Log("[MAHORAGA-BUILD] Created MahoragaPrefab, MahoragaEnemyType, MahoragaTerminalNode, MahoragaTerminalKeyword.");
+            NavMeshAgent savedNav = savedPrefab.GetComponent<NavMeshAgent>();
+            var navSo = new SerializedObject(savedNav);
+            SerializedProperty walkableProp = navSo.FindProperty("m_WalkableMask");
+            if (walkableProp == null)
+            {
+                throw new Exception($"Missing 'm_WalkableMask' property on '{prefabName}' NavMeshAgent.");
+            }
+            walkableProp.intValue = walkableMask;
+            navSo.ApplyModifiedPropertiesWithoutUndo();
+
+            EditorUtility.SetDirty(savedPrefab);
+            PrefabUtility.SavePrefabAsset(savedPrefab);
+            Debug.Log($"[MAHORAGA-BUILD] Saved '{prefabName}' with GlobalObjectIdHash={globalObjectIdHash}, m_WalkableMask={walkableMask}, radius={agentRadius:F2}, stoppingDistance={agentStoppingDistance:F2}, isOutside={enemyType.isOutsideEnemy}.");
+            return savedPrefab;
         }
         finally
         {
@@ -1314,7 +1468,9 @@ third shell did nothing. Leave the scrap. Run.""
         var bundledPaths = new List<string>
         {
             PrefabPath,
+            OutdoorPrefabPath,
             EnemyTypePath,
+            OutdoorEnemyTypePath,
             TerminalNodePath,
             TerminalKeywordPath,
             AnimatorPath,
@@ -1393,9 +1549,11 @@ third shell did nothing. Leave the scrap. Run.""
             string[] allNames = bundle.GetAllAssetNames();
             Debug.Log($"[MAHORAGA-VERIFY] Bundle contains {allNames.Length} explicit assets: {string.Join(", ", allNames)}");
 
-            // 1. Verify all 14 contract assets load by exact name
-            GameObject prefab = RequireAsset<GameObject>(bundle, "MahoragaPrefab");
-            EnemyType enemyType = RequireAsset<EnemyType>(bundle, "MahoragaEnemyType");
+            // 1. Verify all 4 spawn assets + shared contract assets load by exact name
+            GameObject indoorPrefab = RequireAsset<GameObject>(bundle, "MahoragaPrefab");
+            GameObject outdoorPrefab = RequireAsset<GameObject>(bundle, "MahoragaPrefab_Outside");
+            EnemyType indoorEnemyType = RequireAsset<EnemyType>(bundle, "MahoragaEnemyType");
+            EnemyType outdoorEnemyType = RequireAsset<EnemyType>(bundle, "MahoragaEnemyType_Outside");
             TerminalNode terminalNode = RequireAsset<TerminalNode>(bundle, "MahoragaTerminalNode");
             TerminalKeyword terminalKeyword = RequireAsset<TerminalKeyword>(bundle, "MahoragaTerminalKeyword");
             RuntimeAnimatorController animCtrl = RequireAsset<RuntimeAnimatorController>(bundle, "MahoragaAnimator");
@@ -1414,13 +1572,21 @@ third shell did nothing. Leave the scrap. Run.""
                 }
             }
 
-            // 2. Verify ScriptableObjects
-            Assert(enemyType.enemyName == "Mahoraga", "EnemyType.enemyName must be 'Mahoraga'");
-            Assert(enemyType.enemyPrefab != null, "EnemyType.enemyPrefab is null");
-            Assert(enemyType.hitBodySFX == null, "EnemyType.hitBodySFX must be null per #15");
-            Assert(enemyType.hitEnemyVoiceSFX == null, "EnemyType.hitEnemyVoiceSFX must be null per #15");
-            Assert(enemyType.deathSFX == null, "EnemyType.deathSFX must be null per #15");
-            Assert(Mathf.Approximately(enemyType.doorSpeedMultiplier, 1.5f), "EnemyType.doorSpeedMultiplier must be 1.5");
+            // 2. Verify ScriptableObjects (Indoor + Outdoor EnemyTypes + Terminal assets)
+            VerifyEnemyTypeAsset(
+                enemyType: indoorEnemyType,
+                expectedPrefab: indoorPrefab,
+                expectedIsOutside: false,
+                expectedSizeLimit: NavSizeLimit.SmallSpaces,
+                expectedWaterType: EnemyWaterType.LandOnly);
+
+            VerifyEnemyTypeAsset(
+                enemyType: outdoorEnemyType,
+                expectedPrefab: outdoorPrefab,
+                expectedIsOutside: true,
+                expectedSizeLimit: NavSizeLimit.MediumSpaces,
+                expectedWaterType: EnemyWaterType.Amphibious);
+
             Assert(terminalNode.creatureName == "Mahoraga", "TerminalNode.creatureName must be 'Mahoraga'");
             Assert(terminalNode.creatureFileID == -1, "TerminalNode.creatureFileID must be -1");
             Assert(terminalNode.buyItemIndex == -1, "TerminalNode.buyItemIndex must be -1");
@@ -1437,14 +1603,18 @@ third shell did nothing. Leave the scrap. Run.""
             Assert(mahoragaMat.GetTexture("_NormalMap") != null, "Mahoraga_Mat missing _NormalMap");
             Assert(mahoragaMat.GetTexture("_EmissiveColorMap") != null, "Mahoraga_Mat missing _EmissiveColorMap");
 
-            // 4. Verify AnimatorController clips
-            int expectedClipCount = RequiredClips.Length + (_hasRealSummonClip ? 1 : 0);
+            // 4. Verify AnimatorController clips (10 clips: 8 required + Summon_Emerge + Summon_Submerge)
+            Assert(_hasRealSummonClip, $"Real '{SummonClipName}' clip must be present in FBX");
+            Assert(_hasRealSubmergeClip, $"Real '{SubmergeClipName}' clip must be present in FBX");
+            int expectedClipCount = RequiredClips.Length + (_hasRealSummonClip ? 1 : 0) + (_hasRealSubmergeClip ? 1 : 0);
             int distinctClipCount = animCtrl.animationClips.Where(c => c != null).Select(c => c.name).Distinct().Count();
             Assert(distinctClipCount == expectedClipCount,
-                $"AnimatorController has {distinctClipCount} distinct clips (expected {expectedClipCount}; Summon_Emerge real clip present: {_hasRealSummonClip})");
-            if (_hasRealSummonClip)
+                $"AnimatorController has {distinctClipCount} distinct clips (expected {expectedClipCount}; Summon_Emerge real clip={_hasRealSummonClip}, Summon_Submerge real clip={_hasRealSubmergeClip})");
+            Assert(animCtrl.animationClips.Any(c => c != null && c.name == SummonClipName), $"AnimatorController missing clip '{SummonClipName}'");
+            Assert(animCtrl.animationClips.Any(c => c != null && c.name == SubmergeClipName), $"AnimatorController missing clip '{SubmergeClipName}'");
+            foreach (string reqClip in RequiredClips)
             {
-                Assert(animCtrl.animationClips.Any(c => c != null && c.name == SummonClipName), $"AnimatorController missing clip '{SummonClipName}'");
+                Assert(animCtrl.animationClips.Any(c => c != null && c.name == reqClip), $"AnimatorController missing clip '{reqClip}'");
             }
 
             // Parameters/states are editor-only data: inspect the source controller the bundle was built from.
@@ -1452,194 +1622,58 @@ third shell did nothing. Leave the scrap. Run.""
             Assert(animControllerEditor != null, "MahoragaAnimator source controller not found");
             Assert(animControllerEditor.parameters.Any(pr => pr.name == "Summon" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Summon'");
             Assert(animControllerEditor.parameters.Any(pr => pr.name == "SummonSpeed" && pr.type == AnimatorControllerParameterType.Float), "Animator missing float 'SummonSpeed'");
+            Assert(animControllerEditor.parameters.Any(pr => pr.name == "Submerge" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Submerge'");
+            Assert(animControllerEditor.parameters.Any(pr => pr.name == "SubmergeSpeed" && pr.type == AnimatorControllerParameterType.Float), "Animator missing float 'SubmergeSpeed'");
+
+            AnimatorState idleAnimState = animControllerEditor.layers[0].stateMachine.states
+                .Select(cs => cs.state).FirstOrDefault(st => st.name == "Idle");
+            Assert(idleAnimState != null, "Animator state 'Idle' missing");
+
             AnimatorState summonAnimState = animControllerEditor.layers[0].stateMachine.states
                 .Select(cs => cs.state).FirstOrDefault(st => st.name == "Summon_Emerge");
             Assert(summonAnimState != null && summonAnimState.motion != null, "Animator state 'Summon_Emerge' missing or has no motion");
-            Assert(summonAnimState.motion.name == (_hasRealSummonClip ? SummonClipName : FallbackSummonClip),
-                $"Summon_Emerge motion is '{summonAnimState.motion.name}', expected '{(_hasRealSummonClip ? SummonClipName : FallbackSummonClip)}'");
-            Assert(animControllerEditor.layers[0].stateMachine.anyStateTransitions.Any(tr => tr.destinationState == summonAnimState),
-                "No Any State -> Summon_Emerge transition");
-            foreach (string reqClip in RequiredClips)
-            {
-                Assert(animCtrl.animationClips.Any(c => c != null && c.name == reqClip), $"AnimatorController missing clip '{reqClip}'");
-            }
+            Assert(summonAnimState.motion.name == SummonClipName,
+                $"Summon_Emerge motion is '{summonAnimState.motion.name}', expected '{SummonClipName}'");
+            Assert(summonAnimState.speedParameterActive && summonAnimState.speedParameter == "SummonSpeed",
+                "Summon_Emerge must be driven by speedParameter 'SummonSpeed'");
+            Assert(animControllerEditor.layers[0].stateMachine.anyStateTransitions.Any(tr => tr.destinationState == summonAnimState && !tr.canTransitionToSelf),
+                "No valid Any State -> Summon_Emerge transition");
 
-            // 5. Instantiate prefab & inspect components, missing scripts, layers, tags, shaders, height
-            GameObject inst = UnityEngine.Object.Instantiate(prefab);
-            try
-            {
-                int missingScriptTotal = 0;
-                foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
-                {
-                    missingScriptTotal += GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(t.gameObject);
-                    foreach (Component c in t.gameObject.GetComponents<Component>())
-                    {
-                        if (c == null)
-                        {
-                            missingScriptTotal++;
-                        }
-                    }
-                }
-                Assert(missingScriptTotal == 0, $"Found {missingScriptTotal} missing script(s) on reloaded MahoragaPrefab!");
+            AnimatorState submergeAnimState = animControllerEditor.layers[0].stateMachine.states
+                .Select(cs => cs.state).FirstOrDefault(st => st.name == "Summon_Submerge");
+            Assert(submergeAnimState != null && submergeAnimState.motion != null, "Animator state 'Summon_Submerge' missing or has no motion");
+            Assert(submergeAnimState.motion.name == SubmergeClipName,
+                $"Summon_Submerge motion is '{submergeAnimState.motion.name}', expected '{SubmergeClipName}'");
+            Assert(submergeAnimState.speedParameterActive && submergeAnimState.speedParameter == "SubmergeSpeed",
+                "Summon_Submerge must be driven by speedParameter 'SubmergeSpeed'");
+            Assert(animControllerEditor.layers[0].stateMachine.anyStateTransitions.Any(tr => tr.destinationState == submergeAnimState && !tr.canTransitionToSelf),
+                "No valid Any State -> Summon_Submerge transition");
+            Assert(submergeAnimState.transitions.Any(tr => tr.destinationState == idleAnimState && tr.hasExitTime && Mathf.Approximately(tr.exitTime, 0.95f)),
+                "Missing Summon_Submerge -> Idle exit transition at 0.95");
 
-                // Root checks
-                Assert(inst.layer == 19, $"Root layer is {inst.layer}, expected 19 (Enemies)");
-                Assert(inst.CompareTag("Enemy"), $"Root tag is '{inst.tag}', expected 'Enemy'");
+            // 5. Verify both Indoor and Outdoor prefabs
+            long indoorHash = VerifyReloadedPrefabVariant(
+                prefab: indoorPrefab,
+                expectedEnemyType: indoorEnemyType,
+                expectedGlobalObjectIdHash: IndoorGlobalObjectIdHash,
+                expectedWalkableMask: IndoorWalkableMask,
+                expectedRadius: 0.55f,
+                expectedStoppingDistance: 0.35f,
+                expectedAvoidanceType: ObstacleAvoidanceType.MedQualityObstacleAvoidance);
 
-                NetworkObject netObj = inst.GetComponent<NetworkObject>();
-                Assert(netObj != null, "Root missing NetworkObject");
-                var netSo = new SerializedObject(netObj);
-                long netHash = netSo.FindProperty("GlobalObjectIdHash")?.longValue ?? 0;
-                Assert(netHash != 0, "NetworkObject GlobalObjectIdHash is 0!");
+            long outdoorHash = VerifyReloadedPrefabVariant(
+                prefab: outdoorPrefab,
+                expectedEnemyType: outdoorEnemyType,
+                expectedGlobalObjectIdHash: OutdoorGlobalObjectIdHash,
+                expectedWalkableMask: OutdoorWalkableMask,
+                expectedRadius: 0.85f,
+                expectedStoppingDistance: 0.50f,
+                expectedAvoidanceType: ObstacleAvoidanceType.HighQualityObstacleAvoidance);
 
-                NavMeshAgent nav = inst.GetComponent<NavMeshAgent>();
-                Assert(nav != null, "Root missing NavMeshAgent");
-                Assert(Mathf.Approximately(nav.radius, 0.60f), $"NavMeshAgent.radius={nav.radius}, expected 0.60");
-                Assert(Mathf.Approximately(nav.height, 3.30f), $"NavMeshAgent.height={nav.height}, expected 3.30");
-                Assert(Mathf.Approximately(nav.baseOffset, 0.0f), $"NavMeshAgent.baseOffset={nav.baseOffset}, expected 0.0");
+            Assert(indoorHash != 0 && outdoorHash != 0 && indoorHash != outdoorHash,
+                $"Indoor ({indoorHash}) and Outdoor ({outdoorHash}) NetworkObject GlobalObjectIdHash must be distinct and non-zero!");
 
-                MahoragaAI ai = inst.GetComponent<MahoragaAI>();
-                Assert(ai != null, "Root missing MahoragaAI");
-                Assert(ai.enemyType != null, "MahoragaAI.enemyType is null");
-                Assert(ai.creatureAnimator != null, "MahoragaAI.creatureAnimator is null");
-                Assert(ai.creatureVoice != null, "MahoragaAI.creatureVoice is null");
-                Assert(ai.creatureSFX != null, "MahoragaAI.creatureSFX is null");
-                Assert(ai.dieSFX == null, "MahoragaAI.dieSFX must be null per #15");
-                Assert(ai.agent != null, "MahoragaAI.agent is null");
-                Assert(ai.eye != null, "MahoragaAI.eye is null");
-                Assert(ai.thisNetworkObject != null, "MahoragaAI.thisNetworkObject is null");
-                Assert(ai.enemyBehaviourStates != null && ai.enemyBehaviourStates.Length == 7,
-                    $"MahoragaAI.enemyBehaviourStates.Length={ai.enemyBehaviourStates?.Length}, expected 7");
-                string[] expectedStateNames = { "Patrolling", "Investigating", "Chasing", "Attacking", "Adapting", "Summoning", "EngagingEnemy" };
-                for (int si = 0; si < expectedStateNames.Length; si++)
-                {
-                    Assert(ai.enemyBehaviourStates[si] != null && ai.enemyBehaviourStates[si].name == expectedStateNames[si],
-                        $"enemyBehaviourStates[{si}] is '{ai.enemyBehaviourStates[si]?.name}', expected '{expectedStateNames[si]}'");
-                }
-
-                // Summoning hierarchy: root / SummonOffset / ModelContainer / Mahoraga, plus the SummonEffect pool.
-                Transform offsetTr = inst.transform.Find("SummonOffset");
-                Assert(offsetTr != null, "Missing SummonOffset pivot");
-                Assert(offsetTr.localPosition == Vector3.zero && offsetTr.localScale == Vector3.one, "SummonOffset must start at zero offset and unit scale");
-                Assert(offsetTr.Find("ModelContainer") != null, "ModelContainer must be a child of SummonOffset");
-                Assert(offsetTr.Find("ModelContainer/Mahoraga") != null, "Mahoraga model must live under SummonOffset/ModelContainer");
-
-                MahoragaSummonEffect summonFx = inst.GetComponentInChildren<MahoragaSummonEffect>(true);
-                Assert(summonFx != null && summonFx.poolTransform != null && summonFx.poolRenderer != null && summonFx.droplets != null,
-                    "MahoragaSummonEffect missing or references unwired");
-                Assert(summonFx.poolRenderer.sharedMaterial != null && summonFx.poolRenderer.sharedMaterial.shader.name == "HDRP/Lit",
-                    "ShadowPool renderer must use an HDRP/Lit material");
-                Assert(summonFx.poolRenderer.GetComponent<MeshFilter>().sharedMesh != null, "ShadowPool MeshFilter has no mesh");
-                var fxRenderer = summonFx.droplets.GetComponent<ParticleSystemRenderer>();
-                Assert(fxRenderer.renderMode == ParticleSystemRenderMode.Mesh && fxRenderer.mesh != null && fxRenderer.sharedMaterial != null,
-                    "Droplets particle renderer must be Mesh mode with a mesh and material");
-                Assert(summonFx.droplets.emission.rateOverTime.constant == 0f, "Droplets must not emit until the summoning drives them");
-
-                Assert(ai.wheelBone != null, "MahoragaAI.wheelBone is null");
-                Assert(ai.swordBone != null, "MahoragaAI.swordBone is null");
-                Assert(ai.wheelGlowLight != null, "MahoragaAI.wheelGlowLight is null");
-                Assert(ai.audioController != null, "MahoragaAI.audioController is null");
-                Assert(ai.mainRenderer != null, "MahoragaAI.mainRenderer is null");
-
-                MahoragaAudioController audioCtrl = inst.GetComponent<MahoragaAudioController>();
-                Assert(audioCtrl != null, "Root missing MahoragaAudioController");
-                Assert(audioCtrl.voiceSource != null && audioCtrl.bodySource != null, "MahoragaAudioController AudioSources missing");
-                Assert(audioCtrl.voiceSource.outputAudioMixerGroup != null && audioCtrl.voiceSource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
-                    "VoiceSFXSource not routed to Diagetic mixer");
-                Assert(audioCtrl.bodySource.outputAudioMixerGroup != null && audioCtrl.bodySource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
-                    "BodySFXSource not routed to Diagetic mixer");
-                Assert(audioCtrl.voiceSource.GetComponent<AudioLowPassFilter>() != null, "VoiceSFXSource missing AudioLowPassFilter");
-                Assert(audioCtrl.bodySource.GetComponent<AudioLowPassFilter>() != null, "BodySFXSource missing AudioLowPassFilter");
-                Assert(audioCtrl.musicMainClip != null && audioCtrl.wheelTurnClip != null &&
-                       audioCtrl.footstep1Clip != null && audioCtrl.footstep2Clip != null &&
-                       audioCtrl.slashClip != null && audioCtrl.impactClip != null &&
-                       audioCtrl.roarClip != null && audioCtrl.deathClip != null,
-                    "One or more AudioClips null on MahoragaAudioController");
-                Assert(audioCtrl.summonClip != null && audioCtrl.summonClip.name == "mahoraga_summon" && audioCtrl.summonClip.length > 4.5f,
-                    "MahoragaAudioController.summonClip missing or too short");
-
-                // CollisionCollider checks
-                Transform colTr = inst.transform.Find("CollisionCollider");
-                Assert(colTr != null, "Missing CollisionCollider child");
-                Assert(colTr.gameObject.layer == 19, $"CollisionCollider layer={colTr.gameObject.layer}, expected 19");
-                Assert(colTr.gameObject.CompareTag("Enemy"), $"CollisionCollider tag='{colTr.gameObject.tag}', expected 'Enemy'");
-                BoxCollider colBox = colTr.GetComponent<BoxCollider>();
-                Assert(colBox != null && colBox.isTrigger, "CollisionCollider BoxCollider missing or isTrigger!=true");
-                EnemyAICollisionDetect detect = colTr.GetComponent<EnemyAICollisionDetect>();
-                Assert(detect != null && detect.mainScript == ai, "EnemyAICollisionDetect missing or mainScript not wired");
-
-                // ScanNode checks
-                Transform scanTr = inst.transform.Find("ScanNode");
-                Assert(scanTr != null, "Missing ScanNode child");
-                Assert(scanTr.gameObject.layer == 22, $"ScanNode layer={scanTr.gameObject.layer}, expected 22");
-                BoxCollider scanBox = scanTr.GetComponent<BoxCollider>();
-                Assert(scanBox != null && !scanBox.isTrigger, "ScanNode BoxCollider missing or isTrigger!=false");
-                ScanNodeProperties scanProps = scanTr.GetComponent<ScanNodeProperties>();
-                Assert(scanProps != null && scanProps.nodeType == 1 && scanProps.headerText == "Mahoraga", "ScanNodeProperties invalid");
-
-                // MapDot checks
-                Transform mapDotTr = inst.transform.Find("MapDot");
-                Assert(mapDotTr != null, "Missing MapDot child");
-                Assert(mapDotTr.gameObject.layer == 14, $"MapDot layer={mapDotTr.gameObject.layer}, expected 14");
-                MeshRenderer mapDotMr = mapDotTr.GetComponent<MeshRenderer>();
-                Assert(mapDotMr != null && mapDotMr.sharedMaterial != null && mapDotMr.sharedMaterial.shader.name == "HDRP/Unlit",
-                    $"MapDot shader mismatch: '{mapDotMr?.sharedMaterial?.shader?.name}'");
-
-                // Shader & height verification on SkinnedMeshRenderer
-                SkinnedMeshRenderer smr = inst.GetComponentInChildren<SkinnedMeshRenderer>(true);
-                Assert(smr != null, "Reloaded prefab missing SkinnedMeshRenderer");
-                foreach (Material m in smr.sharedMaterials)
-                {
-                    Assert(m != null && m.shader != null && m.shader.name == "HDRP/Lit",
-                        $"SkinnedMeshRenderer material '{m?.name}' uses shader '{m?.shader?.name}' instead of 'HDRP/Lit'!");
-                }
-
-                Bounds smrBounds = smr.bounds;
-                Mesh baked = new Mesh();
-                smr.BakeMesh(baked);
-                Vector3[] verts = baked.vertices;
-                BoneWeight[] weights = smr.sharedMesh.boneWeights;
-                int wheelBoneIndex = Array.FindIndex(smr.bones, b => b != null && b.name == "WheelBone");
-                Assert(wheelBoneIndex >= 0, "WheelBone not found in SkinnedMeshRenderer.bones!");
-
-                float minY = float.MaxValue;
-                float totalMaxY = float.MinValue;
-                float bodyMaxY = float.MinValue;
-                float wheelMaxY = float.MinValue;
-
-                for (int i = 0; i < verts.Length; i++)
-                {
-                    float wy = smr.transform.TransformPoint(verts[i]).y;
-                    if (wy < minY) minY = wy;
-                    if (wy > totalMaxY) totalMaxY = wy;
-
-                    bool isWheelVert = (i < weights.Length) && (
-                        (weights[i].boneIndex0 == wheelBoneIndex && weights[i].weight0 > 0.5f) ||
-                        (weights[i].boneIndex1 == wheelBoneIndex && weights[i].weight1 > 0.5f));
-
-                    if (isWheelVert)
-                    {
-                        if (wy > wheelMaxY) wheelMaxY = wy;
-                    }
-                    else
-                    {
-                        if (wy > bodyMaxY) bodyMaxY = wy;
-                    }
-                }
-                UnityEngine.Object.DestroyImmediate(baked);
-
-                Debug.Log($"[MAHORAGA-VERIFY] SkinnedMeshRenderer.bounds: min={smrBounds.min:F4}, max={smrBounds.max:F4}, size={smrBounds.size:F4}");
-                Debug.Log($"[MAHORAGA-VERIFY] Exact Baked World Y: feetMinY={minY:F4}u, skullCrownBodyMaxY={bodyMaxY:F4}u, dharmaWheelTopMaxY={wheelMaxY:F4}u, totalMaxY={totalMaxY:F4}u");
-                Debug.Log($"[MAHORAGA-VERIFY] MissingScripts=0, Shaders=HDRP/Lit (body) + HDRP/Unlit (MapDot), NetworkObjectHash={netHash}, Assets=14/14 + summon (clip, ShadowPool mesh+material) PASS, Summon_Emerge real clip={_hasRealSummonClip}.");
-
-                Assert(Mathf.Abs(minY) <= 0.02f, $"Feet minY={minY:F4}u deviates from 0.00u!");
-                Assert(bodyMaxY >= 3.31f && bodyMaxY <= 3.52f, $"Standing skull crown height={bodyMaxY:F4}u outside 3.4146u ±3% [3.31, 3.52]!");
-                Assert(totalMaxY <= 3.905f, $"Total height (incl. Dharma Wheel)={totalMaxY:F4}u exceeds 3.90u hallway ceiling clearance!");
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(inst);
-            }
+            Debug.Log($"[MAHORAGA-VERIFY] MissingScripts=0, Shaders=HDRP/Lit (body) + HDRP/Unlit (MapDot), IndoorHash={indoorHash}, OutdoorHash={outdoorHash}, IndoorMask={IndoorWalkableMask}, OutdoorMask={OutdoorWalkableMask}, States={ExpectedBehaviourStateNames.Length}, Summon_Emerge real clip={_hasRealSummonClip}, Summon_Submerge real clip={_hasRealSubmergeClip}.");
         }
         finally
         {
@@ -1647,6 +1681,239 @@ third shell did nothing. Leave the scrap. Run.""
         }
 
         Debug.Log("[MAHORAGA-VERIFY] === ALL SELF-CHECK ASSERTIONS PASSED ===");
+    }
+
+    private static void VerifyEnemyTypeAsset(
+        EnemyType enemyType,
+        GameObject expectedPrefab,
+        bool expectedIsOutside,
+        NavSizeLimit expectedSizeLimit,
+        EnemyWaterType expectedWaterType)
+    {
+        Assert(enemyType.enemyName == "Mahoraga", $"{enemyType.name}.enemyName must be 'Mahoraga'");
+        Assert(enemyType.isOutsideEnemy == expectedIsOutside, $"{enemyType.name}.isOutsideEnemy={enemyType.isOutsideEnemy}, expected {expectedIsOutside}");
+        Assert(enemyType.SizeLimit == expectedSizeLimit, $"{enemyType.name}.SizeLimit={enemyType.SizeLimit}, expected {expectedSizeLimit}");
+        Assert(enemyType.WaterType == expectedWaterType, $"{enemyType.name}.WaterType={enemyType.WaterType}, expected {expectedWaterType}");
+        Assert(enemyType.MaxCount == 1, $"{enemyType.name}.MaxCount={enemyType.MaxCount}, expected 1");
+        Assert(Mathf.Approximately(enemyType.PowerLevel, 3f), $"{enemyType.name}.PowerLevel={enemyType.PowerLevel}, expected 3");
+        Assert(enemyType.useNumberSpawnedFalloff, $"{enemyType.name}.useNumberSpawnedFalloff must be true");
+        Assert(enemyType.probabilityCurve != null && enemyType.probabilityCurve.keys.Length >= 2, $"{enemyType.name}.probabilityCurve invalid");
+        Assert(enemyType.numberSpawnedFalloff != null && enemyType.numberSpawnedFalloff.keys.Length >= 2, $"{enemyType.name}.numberSpawnedFalloff invalid");
+        Assert(enemyType.enemyPrefab != null, $"{enemyType.name}.enemyPrefab is null");
+        Assert(enemyType.enemyPrefab == expectedPrefab, $"{enemyType.name}.enemyPrefab does not match expected prefab '{expectedPrefab.name}'");
+        MahoragaAI prefabAi = enemyType.enemyPrefab.GetComponent<MahoragaAI>();
+        Assert(prefabAi != null && prefabAi.enemyType == enemyType,
+            $"{enemyType.name}.enemyPrefab.GetComponent<MahoragaAI>().enemyType does not reference {enemyType.name}");
+        Assert(enemyType.hitBodySFX == null, $"{enemyType.name}.hitBodySFX must be null per #15");
+        Assert(enemyType.hitEnemyVoiceSFX == null, $"{enemyType.name}.hitEnemyVoiceSFX must be null per #15");
+        Assert(enemyType.deathSFX == null, $"{enemyType.name}.deathSFX must be null per #15");
+        Assert(Mathf.Approximately(enemyType.doorSpeedMultiplier, 1.5f), $"{enemyType.name}.doorSpeedMultiplier must be 1.5");
+    }
+
+    private static long VerifyReloadedPrefabVariant(
+        GameObject prefab,
+        EnemyType expectedEnemyType,
+        uint expectedGlobalObjectIdHash,
+        int expectedWalkableMask,
+        float expectedRadius,
+        float expectedStoppingDistance,
+        ObstacleAvoidanceType expectedAvoidanceType)
+    {
+        // Check serialized properties directly on the reloaded prefab asset first
+        NetworkObject prefabNetObj = prefab.GetComponent<NetworkObject>();
+        Assert(prefabNetObj != null, $"{prefab.name} missing NetworkObject");
+        var prefabNetSo = new SerializedObject(prefabNetObj);
+        long netHash = prefabNetSo.FindProperty("GlobalObjectIdHash")?.longValue ?? 0;
+        Assert(netHash == expectedGlobalObjectIdHash,
+            $"{prefab.name} NetworkObject GlobalObjectIdHash={netHash}, expected {expectedGlobalObjectIdHash}");
+
+        NavMeshAgent prefabNav = prefab.GetComponent<NavMeshAgent>();
+        Assert(prefabNav != null, $"{prefab.name} missing NavMeshAgent");
+        var prefabNavSo = new SerializedObject(prefabNav);
+        int serializedWalkableMask = prefabNavSo.FindProperty("m_WalkableMask")?.intValue ?? 0;
+        Assert(serializedWalkableMask == expectedWalkableMask,
+            $"{prefab.name} NavMeshAgent m_WalkableMask={serializedWalkableMask}, expected {expectedWalkableMask}");
+
+        GameObject inst = UnityEngine.Object.Instantiate(prefab);
+        try
+        {
+            int missingScriptTotal = 0;
+            foreach (Transform t in inst.GetComponentsInChildren<Transform>(true))
+            {
+                missingScriptTotal += GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(t.gameObject);
+                foreach (Component c in t.gameObject.GetComponents<Component>())
+                {
+                    if (c == null)
+                    {
+                        missingScriptTotal++;
+                    }
+                }
+            }
+            Assert(missingScriptTotal == 0, $"Found {missingScriptTotal} missing script(s) on reloaded {prefab.name}!");
+
+            // Root checks
+            Assert(inst.layer == 19, $"{prefab.name} root layer is {inst.layer}, expected 19 (Enemies)");
+            Assert(inst.CompareTag("Enemy"), $"{prefab.name} root tag is '{inst.tag}', expected 'Enemy'");
+
+            NavMeshAgent nav = inst.GetComponent<NavMeshAgent>();
+            Assert(nav != null, $"{prefab.name} missing NavMeshAgent");
+            Assert(Mathf.Approximately(nav.radius, expectedRadius), $"{prefab.name} NavMeshAgent.radius={nav.radius}, expected {expectedRadius}");
+            Assert(Mathf.Approximately(nav.height, 3.30f), $"{prefab.name} NavMeshAgent.height={nav.height}, expected 3.30");
+            Assert(Mathf.Approximately(nav.baseOffset, 0.0f), $"{prefab.name} NavMeshAgent.baseOffset={nav.baseOffset}, expected 0.0");
+            Assert(Mathf.Approximately(nav.angularSpeed, 360f), $"{prefab.name} NavMeshAgent.angularSpeed={nav.angularSpeed}, expected 360");
+            Assert(Mathf.Approximately(nav.acceleration, 45f), $"{prefab.name} NavMeshAgent.acceleration={nav.acceleration}, expected 45");
+            Assert(Mathf.Approximately(nav.stoppingDistance, expectedStoppingDistance),
+                $"{prefab.name} NavMeshAgent.stoppingDistance={nav.stoppingDistance}, expected {expectedStoppingDistance}");
+            Assert(!nav.autoTraverseOffMeshLink, $"{prefab.name} NavMeshAgent.autoTraverseOffMeshLink must be false");
+            Assert(nav.obstacleAvoidanceType == expectedAvoidanceType,
+                $"{prefab.name} NavMeshAgent.obstacleAvoidanceType={nav.obstacleAvoidanceType}, expected {expectedAvoidanceType}");
+            Assert(nav.areaMask == expectedWalkableMask,
+                $"{prefab.name} NavMeshAgent.areaMask={nav.areaMask}, expected {expectedWalkableMask}");
+
+            MahoragaAI ai = inst.GetComponent<MahoragaAI>();
+            Assert(ai != null, $"{prefab.name} root missing MahoragaAI");
+            Assert(ai.enemyType == expectedEnemyType, $"{prefab.name} MahoragaAI.enemyType mismatch");
+            Assert(ai.isOutside == expectedEnemyType.isOutsideEnemy, $"{prefab.name} MahoragaAI.isOutside mismatch");
+            Assert(Mathf.Approximately(ai.updatePositionThreshold, 0.40f),
+                $"{prefab.name} MahoragaAI.updatePositionThreshold={ai.updatePositionThreshold}, expected 0.40");
+            Assert(ai.creatureAnimator != null, $"{prefab.name} MahoragaAI.creatureAnimator is null");
+            Assert(ai.creatureVoice != null, $"{prefab.name} MahoragaAI.creatureVoice is null");
+            Assert(ai.creatureSFX != null, $"{prefab.name} MahoragaAI.creatureSFX is null");
+            Assert(ai.dieSFX == null, $"{prefab.name} MahoragaAI.dieSFX must be null per #15");
+            Assert(ai.agent != null, $"{prefab.name} MahoragaAI.agent is null");
+            Assert(ai.eye != null, $"{prefab.name} MahoragaAI.eye is null");
+            Assert(ai.thisNetworkObject != null, $"{prefab.name} MahoragaAI.thisNetworkObject is null");
+            Assert(ai.enemyBehaviourStates != null && ai.enemyBehaviourStates.Length == ExpectedBehaviourStateNames.Length,
+                $"{prefab.name} MahoragaAI.enemyBehaviourStates.Length={ai.enemyBehaviourStates?.Length}, expected {ExpectedBehaviourStateNames.Length}");
+            for (int si = 0; si < ExpectedBehaviourStateNames.Length; si++)
+            {
+                Assert(ai.enemyBehaviourStates[si] != null && ai.enemyBehaviourStates[si].name == ExpectedBehaviourStateNames[si],
+                    $"{prefab.name} enemyBehaviourStates[{si}] is '{ai.enemyBehaviourStates[si]?.name}', expected '{ExpectedBehaviourStateNames[si]}'");
+            }
+
+            // Summoning hierarchy: root / SummonOffset / ModelContainer / Mahoraga, plus the SummonEffect pool.
+            Transform offsetTr = inst.transform.Find("SummonOffset");
+            Assert(offsetTr != null, $"{prefab.name} missing SummonOffset pivot");
+            Assert(offsetTr.localPosition == Vector3.zero && offsetTr.localScale == Vector3.one, $"{prefab.name} SummonOffset must start at zero offset and unit scale");
+            Assert(offsetTr.Find("ModelContainer") != null, $"{prefab.name} ModelContainer must be a child of SummonOffset");
+            Assert(offsetTr.Find("ModelContainer/Mahoraga") != null, $"{prefab.name} Mahoraga model must live under SummonOffset/ModelContainer");
+
+            MahoragaSummonEffect summonFx = inst.GetComponentInChildren<MahoragaSummonEffect>(true);
+            Assert(summonFx != null && summonFx.poolTransform != null && summonFx.poolRenderer != null && summonFx.droplets != null,
+                $"{prefab.name} MahoragaSummonEffect missing or references unwired");
+            Assert(summonFx.poolRenderer.sharedMaterial != null && summonFx.poolRenderer.sharedMaterial.shader.name == "HDRP/Lit",
+                $"{prefab.name} ShadowPool renderer must use an HDRP/Lit material");
+            Assert(summonFx.poolRenderer.GetComponent<MeshFilter>().sharedMesh != null, $"{prefab.name} ShadowPool MeshFilter has no mesh");
+            var fxRenderer = summonFx.droplets.GetComponent<ParticleSystemRenderer>();
+            Assert(fxRenderer.renderMode == ParticleSystemRenderMode.Mesh && fxRenderer.mesh != null && fxRenderer.sharedMaterial != null,
+                $"{prefab.name} Droplets particle renderer must be Mesh mode with a mesh and material");
+            Assert(summonFx.droplets.emission.rateOverTime.constant == 0f, $"{prefab.name} Droplets must not emit until the summoning drives them");
+
+            Assert(ai.wheelBone != null, $"{prefab.name} MahoragaAI.wheelBone is null");
+            Assert(ai.swordBone != null, $"{prefab.name} MahoragaAI.swordBone is null");
+            Assert(ai.wheelGlowLight != null, $"{prefab.name} MahoragaAI.wheelGlowLight is null");
+            Assert(ai.audioController != null, $"{prefab.name} MahoragaAI.audioController is null");
+            Assert(ai.mainRenderer != null, $"{prefab.name} MahoragaAI.mainRenderer is null");
+
+            MahoragaAudioController audioCtrl = inst.GetComponent<MahoragaAudioController>();
+            Assert(audioCtrl != null, $"{prefab.name} root missing MahoragaAudioController");
+            Assert(audioCtrl.voiceSource != null && audioCtrl.bodySource != null, $"{prefab.name} MahoragaAudioController AudioSources missing");
+            Assert(audioCtrl.voiceSource.outputAudioMixerGroup != null && audioCtrl.voiceSource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
+                $"{prefab.name} VoiceSFXSource not routed to Diagetic mixer");
+            Assert(audioCtrl.bodySource.outputAudioMixerGroup != null && audioCtrl.bodySource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
+                $"{prefab.name} BodySFXSource not routed to Diagetic mixer");
+            Assert(audioCtrl.voiceSource.GetComponent<AudioLowPassFilter>() != null, $"{prefab.name} VoiceSFXSource missing AudioLowPassFilter");
+            Assert(audioCtrl.bodySource.GetComponent<AudioLowPassFilter>() != null, $"{prefab.name} BodySFXSource missing AudioLowPassFilter");
+            Assert(audioCtrl.musicMainClip != null && audioCtrl.wheelTurnClip != null &&
+                   audioCtrl.footstep1Clip != null && audioCtrl.footstep2Clip != null &&
+                   audioCtrl.slashClip != null && audioCtrl.impactClip != null &&
+                   audioCtrl.roarClip != null && audioCtrl.deathClip != null,
+                $"{prefab.name} one or more AudioClips null on MahoragaAudioController");
+            Assert(audioCtrl.summonClip != null && audioCtrl.summonClip.name == "mahoraga_summon" && audioCtrl.summonClip.length > 4.5f,
+                $"{prefab.name} MahoragaAudioController.summonClip missing or too short");
+
+            // CollisionCollider checks
+            Transform colTr = inst.transform.Find("CollisionCollider");
+            Assert(colTr != null, $"{prefab.name} missing CollisionCollider child");
+            Assert(colTr.gameObject.layer == 19, $"{prefab.name} CollisionCollider layer={colTr.gameObject.layer}, expected 19");
+            Assert(colTr.gameObject.CompareTag("Enemy"), $"{prefab.name} CollisionCollider tag='{colTr.gameObject.tag}', expected 'Enemy'");
+            BoxCollider colBox = colTr.GetComponent<BoxCollider>();
+            Assert(colBox != null && colBox.isTrigger, $"{prefab.name} CollisionCollider BoxCollider missing or isTrigger!=true");
+            EnemyAICollisionDetect detect = colTr.GetComponent<EnemyAICollisionDetect>();
+            Assert(detect != null && detect.mainScript == ai, $"{prefab.name} EnemyAICollisionDetect missing or mainScript not wired");
+
+            // ScanNode checks
+            Transform scanTr = inst.transform.Find("ScanNode");
+            Assert(scanTr != null, $"{prefab.name} missing ScanNode child");
+            Assert(scanTr.gameObject.layer == 22, $"{prefab.name} ScanNode layer={scanTr.gameObject.layer}, expected 22");
+            BoxCollider scanBox = scanTr.GetComponent<BoxCollider>();
+            Assert(scanBox != null && !scanBox.isTrigger, $"{prefab.name} ScanNode BoxCollider missing or isTrigger!=false");
+            ScanNodeProperties scanProps = scanTr.GetComponent<ScanNodeProperties>();
+            Assert(scanProps != null && scanProps.nodeType == 1 && scanProps.headerText == "Mahoraga", $"{prefab.name} ScanNodeProperties invalid");
+
+            // MapDot checks
+            Transform mapDotTr = inst.transform.Find("MapDot");
+            Assert(mapDotTr != null, $"{prefab.name} missing MapDot child");
+            Assert(mapDotTr.gameObject.layer == 14, $"{prefab.name} MapDot layer={mapDotTr.gameObject.layer}, expected 14");
+            MeshRenderer mapDotMr = mapDotTr.GetComponent<MeshRenderer>();
+            Assert(mapDotMr != null && mapDotMr.sharedMaterial != null && mapDotMr.sharedMaterial.shader.name == "HDRP/Unlit",
+                $"{prefab.name} MapDot shader mismatch: '{mapDotMr?.sharedMaterial?.shader?.name}'");
+
+            // Shader & height verification on SkinnedMeshRenderer
+            SkinnedMeshRenderer smr = inst.GetComponentInChildren<SkinnedMeshRenderer>(true);
+            Assert(smr != null, $"{prefab.name} reloaded prefab missing SkinnedMeshRenderer");
+            foreach (Material m in smr.sharedMaterials)
+            {
+                Assert(m != null && m.shader != null && m.shader.name == "HDRP/Lit",
+                    $"{prefab.name} SkinnedMeshRenderer material '{m?.name}' uses shader '{m?.shader?.name}' instead of 'HDRP/Lit'!");
+            }
+
+            Bounds smrBounds = smr.bounds;
+            Mesh baked = new Mesh();
+            smr.BakeMesh(baked);
+            Vector3[] verts = baked.vertices;
+            BoneWeight[] weights = smr.sharedMesh.boneWeights;
+            int wheelBoneIndex = Array.FindIndex(smr.bones, b => b != null && b.name == "WheelBone");
+            Assert(wheelBoneIndex >= 0, $"{prefab.name} WheelBone not found in SkinnedMeshRenderer.bones!");
+
+            float minY = float.MaxValue;
+            float totalMaxY = float.MinValue;
+            float bodyMaxY = float.MinValue;
+            float wheelMaxY = float.MinValue;
+
+            for (int i = 0; i < verts.Length; i++)
+            {
+                float wy = smr.transform.TransformPoint(verts[i]).y;
+                if (wy < minY) minY = wy;
+                if (wy > totalMaxY) totalMaxY = wy;
+
+                bool isWheelVert = (i < weights.Length) && (
+                    (weights[i].boneIndex0 == wheelBoneIndex && weights[i].weight0 > 0.5f) ||
+                    (weights[i].boneIndex1 == wheelBoneIndex && weights[i].weight1 > 0.5f));
+
+                if (isWheelVert)
+                {
+                    if (wy > wheelMaxY) wheelMaxY = wy;
+                }
+                else
+                {
+                    if (wy > bodyMaxY) bodyMaxY = wy;
+                }
+            }
+            UnityEngine.Object.DestroyImmediate(baked);
+
+            Debug.Log($"[MAHORAGA-VERIFY] ({prefab.name}) SkinnedMeshRenderer.bounds: min={smrBounds.min:F4}, max={smrBounds.max:F4}, size={smrBounds.size:F4}");
+            Debug.Log($"[MAHORAGA-VERIFY] ({prefab.name}) Exact Baked World Y: feetMinY={minY:F4}u, skullCrownBodyMaxY={bodyMaxY:F4}u, dharmaWheelTopMaxY={wheelMaxY:F4}u, totalMaxY={totalMaxY:F4}u");
+
+            Assert(Mathf.Abs(minY) <= 0.02f, $"{prefab.name} Feet minY={minY:F4}u deviates from 0.00u!");
+            Assert(bodyMaxY >= 3.31f && bodyMaxY <= 3.52f, $"{prefab.name} Standing skull crown height={bodyMaxY:F4}u outside 3.4146u ±3% [3.31, 3.52]!");
+            Assert(totalMaxY <= 3.905f, $"{prefab.name} Total height (incl. Dharma Wheel)={totalMaxY:F4}u exceeds 3.90u hallway ceiling clearance!");
+            return netHash;
+        }
+        finally
+        {
+            UnityEngine.Object.DestroyImmediate(inst);
+        }
     }
 
     private static T RequireAsset<T>(AssetBundle bundle, string assetName) where T : UnityEngine.Object

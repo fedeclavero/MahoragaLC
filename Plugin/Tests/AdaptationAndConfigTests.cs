@@ -41,6 +41,11 @@ internal static class Program
         Run("DistinctAttackerWindow counts different attackers inside the window", TestDistinctAttackers);
         Run("GrowthMath: match scale, steps, cap, indoor reset, approach", TestGrowthMath);
         Run("Old Bird durability and knockback maths", TestDurabilityAndKnockback);
+        Run("Hunt: realistic outdoor perception (ShouldHuntWithoutLineOfSight)", SummonAndHuntTests.TestOutdoorPerception);
+        Run("Old Bird #1 priority (EvaluateOldBird), AdvanceWheelStep post-stage-3, and +45 deg Wheel progression (0..360)", TestOldBirdEngagementAndWheelProgression);
+        Run("ShadowAmbush: CanTriggerAmbush gates (toggle, time, lost sight, cooldown, Old Bird priority, AI state)", SummonAndHuntTests.TestShadowAmbushGating);
+        Run("Submerge timeline: sink 0 -> -4.4m, tint fade 1.0 -> 0.06, pool timing, scaling", SummonAndHuntTests.TestSubmergeTimeline);
+        Run("PluginConfig defaults (dual spawn, outdoor perception, OldBird, ShadowAmbush) & obsolete key removal", TestPluginConfigDefaultsAndOrphanedCleanup);
 
         Console.WriteLine($"Tests completed: {_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
@@ -545,5 +550,281 @@ internal static class Program
         float dist = KnockbackMath.TotalDistance(9f, 4f);
         Assert(dist > 1.5f && dist < 3f, "cleave shove of a medium enemy is a couple of meters");
         Assert(KnockbackMath.DecayingSpeed(9f, 0.6f, 4f) < 1f, "push is essentially over after its duration");
+    }
+
+    private static float ComputeWheelAngle(int adaptationWheelSteps, int summonWheelOffsetSteps = 0)
+    {
+        return (adaptationWheelSteps + summonWheelOffsetSteps) * SummonTimeline.WheelTurnDegrees;
+    }
+
+    private static void TestOldBirdEngagementAndWheelProgression()
+    {
+        // 1. EnemyEngagementPolicy.EvaluateOldBird: Old Bird is #1 priority (no player preemption, no immortal cap)
+        EngageVerdict EvalOb(
+            bool valid = true,
+            float engaged = 5f,
+            float maxEngage = 120f,
+            float unreachable = 0f,
+            float unreachableLimit = 8f,
+            float dist = 35f,
+            float maxDist = 250f) =>
+            EnemyEngagementPolicy.EvaluateOldBird(valid, engaged, maxEngage, unreachable, unreachableLimit, dist, maxDist);
+
+        Assert(EvalOb() == EngageVerdict.Continue, "active Old Bird fight continues");
+        Assert(EvalOb(engaged: 119.9f, dist: 250f) == EngageVerdict.Continue, "continues up to 120s and 250m seek range");
+        Assert(EvalOb(valid: false) == EngageVerdict.TargetGone, "destroyed/invalid Old Bird terminates with TargetGone");
+        Assert(EvalOb(engaged: 120.0f) == EngageVerdict.TimedOut, "Old Bird engagement terminates at maxEngageSeconds (120s)");
+        Assert(EvalOb(unreachable: 8.0f) == EngageVerdict.Unreachable, "unreachable Old Bird terminates at limit");
+        Assert(EvalOb(dist: 250.1f) == EngageVerdict.TooFar, "Old Bird beyond maxDistance terminates with TooFar");
+
+        // 2. MahoragaAdaptationSystem.AdvanceWheelStep & +45 deg Wheel clicks (stages 1..3 + post-stage-3 Old Bird hits)
+        AdaptationSettings st = AdaptationSettings.CreateProgressive(1, 0.40f, 0.70f, 0.95f, 0.20f, oldBirdMissileFullResistance: 0.90f);
+        var sys = new MahoragaAdaptationSystem();
+        Assert(sys.WheelStepCount == 0 && ComputeWheelAngle(sys.WheelStepCount) == 0f, "wheel starts at step 0 (0 deg)");
+
+        // Stage 1..3 Old Bird missile hits advance WheelStepCount via EvaluateDamage (1 -> 2 -> 3)
+        int hp = 18;
+        for (int hit = 1; hit <= 3; hit++)
+        {
+            var eval = sys.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, hp, 18, false, st, hit * 2f, hpFloor: 5);
+            hp = eval.FinalHP;
+            Assert(sys.WheelStepCount == hit, $"Old Bird hit {hit} must advance WheelStepCount to {hit} (got {sys.WheelStepCount})");
+            if (hit < 3)
+            {
+                Assert(eval.TriggeredWheelClick && !eval.TriggeredAdaptation, $"hit {hit} triggers +45 deg wheel click");
+            }
+            else
+            {
+                Assert(eval.TriggeredAdaptation && sys.IsAdapted(AdaptationCategory.OldBirdMissile), "hit 3 completes full adaptation");
+            }
+        }
+
+        // Post-stage-3 Old Bird hits: EvaluateDamage reports WasAlreadyAdapted, and HandleDamageServer calls AdvanceWheelStep()
+        // so every subsequent Old Bird hit / growth step still turns the Dharma Wheel +1 spoke (+45 deg).
+        for (int postHit = 4; postHit <= 8; postHit++)
+        {
+            var eval = sys.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, hp, 18, false, st, postHit * 2f, hpFloor: 5);
+            hp = eval.FinalHP;
+            Assert(eval.WasAlreadyAdapted && !eval.TriggeredAdaptation && !eval.TriggeredWheelClick, "post-stage-3 hit is already adapted");
+            int newStep = sys.AdvanceWheelStep();
+            Assert(newStep == postHit && sys.WheelStepCount == postHit, $"AdvanceWheelStep() must advance to step {postHit} (+45 deg per step)");
+        }
+
+        // 3. ComputeWheelAngle progression across all 8 spokes: 0 -> 45 -> 90 -> 135 -> 180 -> 225 -> 270 -> 315 -> 360 (0 mod 360)
+        float[] expectedAngles = { 0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f, 360f };
+        for (int step = 0; step < expectedAngles.Length; step++)
+        {
+            float angle = ComputeWheelAngle(step);
+            Assert(Math.Abs(angle - expectedAngles[step]) < 1e-4f, $"step {step} must equal {expectedAngles[step]} deg (got {angle})");
+            if (step > 0)
+            {
+                float delta = angle - ComputeWheelAngle(step - 1);
+                Assert(Math.Abs(delta - 45f) < 1e-4f, $"each wheel step must add exactly +45 deg (1 ball increment, never 360; got {delta})");
+            }
+        }
+        Assert(Math.Abs(ComputeWheelAngle(8) % 360f) < 1e-4f, "8 steps of +45 deg complete 360 deg (0 mod 360)");
+        Assert(Math.Abs(ComputeWheelAngle(3, summonWheelOffsetSteps: 1) - 180f) < 1e-4f,
+            "initial summon +45 deg offset folds seamlessly into 3 adaptation steps -> 180 deg");
+        Assert(Math.Abs(ComputeWheelAngle(3, summonWheelOffsetSteps: 2) - 225f) < 1e-4f,
+            "Shadow Ambush re-summon adds a second +45 deg summon offset -> 225 deg without snap-back");
+    }
+
+    private static void TestPluginConfigDefaultsAndOrphanedCleanup()
+    {
+        var cfgFile = new BepInEx.Configuration.ConfigFile();
+        // Seed obsolete non-OldBird keys in OrphanedEntries to verify ClearOrphanedEntries prunes them on load.
+        cfgFile.SeedOrphaned("EnemyInteraction", "FightEnemies", "true");
+        cfgFile.SeedOrphaned("EnemyInteraction", "EngageEnemiesWhenIdle", "true");
+        cfgFile.SeedOrphaned("EnemyInteraction", "ImmortalEnemyEngageSeconds", "6.0");
+
+        MahoragaConfig cfg = MahoragaConfig.Bind(cfgFile);
+        Assert(MahoragaConfig.Current == cfg, "MahoragaConfig.Bind must set MahoragaConfig.Current");
+
+        // Verify required defaults from Wave-2 specification
+        Assert(cfg.AllowOutdoorSpawn.Value == true, "AllowOutdoorSpawn default must be true");
+        Assert(cfg.OutdoorRarity.Value == 14, $"OutdoorRarity default must be 14 (got {cfg.OutdoorRarity.Value})");
+        Assert(cfg.OutdoorMoonRarityOverrides.Value == "", "OutdoorMoonRarityOverrides default must be empty string");
+        Assert(cfg.OutdoorMaxCount.Value == 1, $"OutdoorMaxCount default must be 1 (got {cfg.OutdoorMaxCount.Value})");
+        Assert(Math.Abs(cfg.OutdoorPowerLevel.Value - 3.0f) < 1e-4f, $"OutdoorPowerLevel default must be 3.0f (got {cfg.OutdoorPowerLevel.Value})");
+        Assert(cfg.HuntPlayers.Value == true, "HuntPlayers (indoors) default must be true");
+        Assert(cfg.HuntPlayersOutdoors.Value == false, "HuntPlayersOutdoors default must be false");
+        Assert(cfg.FightOldBirds.Value == true, "FightOldBirds default must be true");
+        Assert(Math.Abs(cfg.OldBirdSeekRange.Value - 250.0f) < 1e-4f, $"OldBirdSeekRange default must be 250f (got {cfg.OldBirdSeekRange.Value})");
+        var seekRange = cfg.OldBirdSeekRange.Description.AcceptableValues as BepInEx.Configuration.AcceptableValueRange<float>;
+        Assert(seekRange != null && Math.Abs(seekRange.MinValue - 10.0f) < 1e-4f && Math.Abs(seekRange.MaxValue - 500.0f) < 1e-4f,
+            "OldBirdSeekRange acceptable range must be 10..500");
+        Assert(Math.Abs(cfg.OldBirdEngageMaxSeconds.Value - 120.0f) < 1e-4f, $"OldBirdEngageMaxSeconds default must be 120f (got {cfg.OldBirdEngageMaxSeconds.Value})");
+        Assert(cfg.EnableShadowAmbush.Value == true, "EnableShadowAmbush default must be true");
+        Assert(Math.Abs(cfg.ShadowAmbushMinTime.Value - 0.62f) < 1e-4f, $"ShadowAmbushMinTime default must be 0.62f (got {cfg.ShadowAmbushMinTime.Value})");
+        Assert(Math.Abs(cfg.ShadowAmbushLostSightDelay.Value - 12.0f) < 1e-4f, $"ShadowAmbushLostSightDelay default must be 12f (got {cfg.ShadowAmbushLostSightDelay.Value})");
+        Assert(Math.Abs(cfg.ShadowAmbushCooldown.Value - 45.0f) < 1e-4f, $"ShadowAmbushCooldown default must be 45f (got {cfg.ShadowAmbushCooldown.Value})");
+        Assert(Math.Abs(cfg.ShadowAmbushSubmergeDuration.Value - 2.6f) < 1e-4f, $"ShadowAmbushSubmergeDuration default must be 2.6f (got {cfg.ShadowAmbushSubmergeDuration.Value})");
+
+        // Verify obsolete non-OldBird keys were removed and pruned
+        Type cfgType = typeof(MahoragaConfig);
+        Assert(cfgType.GetProperty("FightEnemies") == null, "obsolete FightEnemies property must not exist");
+        Assert(cfgType.GetProperty("EngageEnemiesWhenIdle") == null, "obsolete EngageEnemiesWhenIdle property must not exist");
+        Assert(cfgType.GetProperty("ImmortalEnemyEngageSeconds") == null, "obsolete ImmortalEnemyEngageSeconds property must not exist");
+        Assert(!cfgFile.ContainsKey("EnemyInteraction", "FightEnemies") &&
+               !cfgFile.ContainsKey("EnemyInteraction", "EngageEnemiesWhenIdle") &&
+               !cfgFile.ContainsKey("EnemyInteraction", "ImmortalEnemyEngageSeconds"),
+            "obsolete non-OldBird keys must not be bound in ConfigFile");
+        Assert(cfgFile.OrphanedCount == 0 && cfgFile.SaveCount == 1, "ClearOrphanedEntries must clear orphaned keys and save once");
+
+        // Verify ApplyOutdoorMoonOverrides layers OutdoorMoonRarityOverrides on top of MoonRarityOverrides
+        cfg.MoonRarityOverrides.Value = "Experimentation:10,Titan:35,46 Infernis:25";
+        cfg.OutdoorMoonRarityOverrides.Value = "Experimentation:0,Artifice:40,46 Infernis:50";
+        var levelRarities = new Dictionary<LethalLib.Modules.Levels.LevelTypes, int>();
+        var customRarities = new Dictionary<string, int>();
+        cfg.ApplyOutdoorMoonOverrides(levelRarities, customRarities);
+        Assert(levelRarities[LethalLib.Modules.Levels.LevelTypes.ExperimentationLevel] == 0, "OutdoorMoonRarityOverrides overrides Experimentation to 0");
+        Assert(levelRarities[LethalLib.Modules.Levels.LevelTypes.TitanLevel] == 35, "MoonRarityOverrides base kept for Titan (35)");
+        Assert(levelRarities[LethalLib.Modules.Levels.LevelTypes.ArtificeLevel] == 40, "OutdoorMoonRarityOverrides adds Artifice (40)");
+        Assert(customRarities["46 Infernis"] == 50, "OutdoorMoonRarityOverrides overrides modded moon 46 Infernis to 50");
+    }
+}
+
+namespace BepInEx.Configuration
+{
+    public sealed class ConfigDefinition : IEquatable<ConfigDefinition>
+    {
+        public string Section { get; }
+        public string Key { get; }
+
+        public ConfigDefinition(string section, string key)
+        {
+            Section = section;
+            Key = key;
+        }
+
+        public bool Equals(ConfigDefinition? other) =>
+            other != null && Section == other.Section && Key == other.Key;
+
+        public override bool Equals(object? obj) => obj is ConfigDefinition other && Equals(other);
+
+        public override int GetHashCode() => HashCode.Combine(Section, Key);
+    }
+
+    public abstract class AcceptableValueBase
+    {
+    }
+
+    public sealed class AcceptableValueRange<T> : AcceptableValueBase where T : IComparable
+    {
+        public T MinValue { get; }
+        public T MaxValue { get; }
+
+        public AcceptableValueRange(T minValue, T maxValue)
+        {
+            MinValue = minValue;
+            MaxValue = maxValue;
+        }
+    }
+
+    public sealed class AcceptableValueList<T> : AcceptableValueBase where T : IEquatable<T>
+    {
+        public T[] AcceptableValues { get; }
+
+        public AcceptableValueList(params T[] acceptableValues)
+        {
+            AcceptableValues = acceptableValues;
+        }
+    }
+
+    public sealed class ConfigDescription
+    {
+        public string Description { get; }
+        public AcceptableValueBase? AcceptableValues { get; }
+
+        public ConfigDescription(string description, AcceptableValueBase? acceptableValues = null)
+        {
+            Description = description;
+            AcceptableValues = acceptableValues;
+        }
+    }
+
+    public sealed class ConfigEntry<T>
+    {
+        private T _value;
+
+        public ConfigDefinition Definition { get; }
+        public T DefaultValue { get; }
+        public ConfigDescription Description { get; }
+        public event EventHandler? SettingChanged;
+
+        public T Value
+        {
+            get => _value;
+            set
+            {
+                _value = value;
+                SettingChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public ConfigEntry(ConfigDefinition definition, T defaultValue, ConfigDescription description)
+        {
+            Definition = definition;
+            DefaultValue = defaultValue;
+            _value = defaultValue;
+            Description = description;
+        }
+    }
+
+    public sealed class ConfigFile
+    {
+        private readonly Dictionary<ConfigDefinition, object> _entries = new Dictionary<ConfigDefinition, object>();
+        private Dictionary<ConfigDefinition, string> OrphanedEntries { get; } = new Dictionary<ConfigDefinition, string>();
+
+        public int SaveCount { get; private set; }
+        public int OrphanedCount => OrphanedEntries.Count;
+
+        public void SeedOrphaned(string section, string key, string rawValue)
+        {
+            OrphanedEntries[new ConfigDefinition(section, key)] = rawValue;
+        }
+
+        public bool ContainsKey(string section, string key) =>
+            _entries.ContainsKey(new ConfigDefinition(section, key));
+
+        public ConfigEntry<T> Bind<T>(string section, string key, T defaultValue, string description) =>
+            Bind(section, key, defaultValue, new ConfigDescription(description));
+
+        public ConfigEntry<T> Bind<T>(string section, string key, T defaultValue, ConfigDescription configDescription)
+        {
+            var def = new ConfigDefinition(section, key);
+            var entry = new ConfigEntry<T>(def, defaultValue, configDescription);
+            _entries[def] = entry;
+            return entry;
+        }
+
+        public void Save()
+        {
+            SaveCount++;
+        }
+    }
+}
+
+namespace LethalLib.Modules
+{
+    public static class Levels
+    {
+        [Flags]
+        public enum LevelTypes
+        {
+            None = 0,
+            ExperimentationLevel = 4,
+            AssuranceLevel = 8,
+            VowLevel = 16,
+            OffenseLevel = 32,
+            MarchLevel = 64,
+            RendLevel = 128,
+            DineLevel = 256,
+            TitanLevel = 512,
+            AdamanceLevel = 1024,
+            ArtificeLevel = 2048,
+            EmbrionLevel = 4096,
+            LiquidationLevel = 8192
+        }
     }
 }

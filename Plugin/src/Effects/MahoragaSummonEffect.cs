@@ -57,10 +57,16 @@ namespace MahoragaLC.Effects
         public void Begin(float poolRadius)
         {
             ResolveReferences();
-            _baseRadius = poolRadius;
+            _baseRadius = Mathf.Max(0.5f, poolRadius);
             _active = true;
             _lastRate = -1f;
             _lastTime = 0f;
+
+            if (droplets != null)
+            {
+                droplets.Stop(withChildren: false, ParticleSystemStopBehavior.StopEmittingAndClear);
+            }
+            _dropletsPlaying = false;
 
             Transform root = transform.parent != null ? transform.parent : transform;
             Vector3 up = Vector3.up;
@@ -90,6 +96,7 @@ namespace MahoragaLC.Effects
 
             if (poolTransform != null)
             {
+                poolTransform.localRotation = Quaternion.identity;
                 poolTransform.localScale = new Vector3(0.001f, 1f, 0.001f);
             }
 

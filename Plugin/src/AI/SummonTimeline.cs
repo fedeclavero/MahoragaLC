@@ -11,16 +11,19 @@ namespace MahoragaLC.AI
     ///   0.00 - 0.90  shadow pool spreads on the floor, rumble starts, model fully submerged
     ///   0.80 - 2.60  Mahoraga climbs out of the shadow (model visual offset -4.4 m -> 0 m)
     ///   2.60         emergence boom (camera shake)
-    ///   2.65 - 3.75  Dharma wheel spins one full turn + gong + golden flash
+    ///   2.65 - 3.75  Dharma wheel turns one spoke (+45 deg, 1 ball -> next ball) + gong + golden flash
     ///   3.20         roar
     ///   3.70 - 4.80  shadow dissolves (pool shrinks), droplets stop
-    ///   4.80         sequence ends, AI takes over (hunt)
+    ///   4.80         sequence ends, +45 deg spoke advance persists seamlessly, AI takes over
     /// </summary>
     public readonly struct SummonTimeline
     {
         public const float ReferenceDuration = 4.8f;
         public const float MinDuration = 3.0f;
         public const float MaxDuration = 12.0f;
+
+        /// <summary>Exact angular advance per Dharma Wheel click/summon turn (1 spoke = 360 / 8 = +45 deg).</summary>
+        public const float WheelTurnDegrees = 45f;
 
         /// <summary>Visual offset (metres) that hides the 3.9 m tall model completely below the floor.</summary>
         public const float SubmergedOffset = -4.4f;
@@ -108,7 +111,11 @@ namespace MahoragaLC.AI
         /// <summary>True while any part of the model could be above the floor (renderers on).</summary>
         public bool IsModelVisible(float t) => t >= EmergeStart;
 
-        /// <summary>Extra degrees added on top of the cumulative adaptation angle: 0 -> 360 (one full turn).</summary>
+        /// <summary>
+        /// Extra degrees added on top of the current wheel yaw during summon: 0 -> +45 deg (one spoke).
+        /// Holds at +45 deg after WheelEnd so EndSummonPresentation folds it into the persistent spoke offset
+        /// with zero snap-back.
+        /// </summary>
         public float WheelExtraAngle(float t)
         {
             if (t <= WheelStart)
@@ -118,12 +125,12 @@ namespace MahoragaLC.AI
 
             if (t >= WheelEnd)
             {
-                return 0f; // 360 deg == identical pose; avoids a visible pop and keeps the cumulative angle exact.
+                return WheelTurnDegrees;
             }
 
             float u = (t - WheelStart) / (WheelEnd - WheelStart);
             float eased = 1f - (float)Math.Pow(1f - u, 3.0);
-            return 360f * eased;
+            return WheelTurnDegrees * eased;
         }
 
         /// <summary>Base colour multiplier (0.06 black shadow coat -> 1 normal skin) as he climbs out.</summary>

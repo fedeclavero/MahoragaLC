@@ -17,8 +17,11 @@ namespace MahoragaLC.Config
         public ConfigEntry<string> MoonRarityOverrides { get; }
         public ConfigEntry<bool> AllowOutdoorSpawn { get; }
         public ConfigEntry<int> OutdoorRarity { get; }
+        public ConfigEntry<string> OutdoorMoonRarityOverrides { get; }
         public ConfigEntry<float> PowerLevel { get; }
         public ConfigEntry<int> MaxCount { get; }
+        public ConfigEntry<float> OutdoorPowerLevel { get; }
+        public ConfigEntry<int> OutdoorMaxCount { get; }
 
         // [Combat]
         public ConfigEntry<int> MaxHP { get; }
@@ -40,14 +43,11 @@ namespace MahoragaLC.Config
 
         // [EnemyInteraction]
         public ConfigEntry<bool> VisibleToOtherEnemies { get; }
-        public ConfigEntry<bool> FightEnemies { get; }
-        public ConfigEntry<bool> EngageEnemiesWhenIdle { get; }
         public ConfigEntry<int> EnemyCleaveDamage { get; }
         public ConfigEntry<int> EnemySlamDamage { get; }
         public ConfigEntry<float> EnemyKnockbackMultiplier { get; }
         public ConfigEntry<float> EnemyGrudgeHalfLifeSeconds { get; }
         public ConfigEntry<float> EnemyEngageMaxSeconds { get; }
-        public ConfigEntry<float> ImmortalEnemyEngageSeconds { get; }
         public ConfigEntry<float> DisengageCooldownSeconds { get; }
 
         // [OldBird]
@@ -111,23 +111,29 @@ namespace MahoragaLC.Config
             AllowOutdoorSpawn = cfg.Bind(
                 "Spawning",
                 "AllowOutdoorSpawn",
-                false,
-                "If true, also registers an outdoor spawn profile for Mahoraga across all moons.");
+                true,
+                "If true, registers the dedicated outdoor spawn profile (MahoragaEnemyType_Outside) across all vanilla and modded moons.");
 
             OutdoorRarity = cfg.Bind(
                 "Spawning",
                 "OutdoorRarity",
-                12,
+                14,
                 new ConfigDescription(
-                    "Outdoor spawn weight used when AllowOutdoorSpawn is enabled.",
+                    "Default outdoor spawn weight used when AllowOutdoorSpawn is enabled (0 disables outdoor spawns unless overridden).",
                     new AcceptableValueRange<int>(0, 100)));
+
+            OutdoorMoonRarityOverrides = cfg.Bind(
+                "Spawning",
+                "OutdoorMoonRarityOverrides",
+                "",
+                "Optional comma-separated per-moon outdoor spawn weight overrides (layered on top of MoonRarityOverrides). Examples: \"Artifice:35,Experimentation:0\".");
 
             PowerLevel = cfg.Bind(
                 "Spawning",
                 "PowerLevel",
                 3.0f,
                 new ConfigDescription(
-                    "Moon enemy power budget consumed by each spawned Mahoraga.",
+                    "Indoor moon enemy power budget consumed by each spawned Mahoraga.",
                     new AcceptableValueRange<float>(1.0f, 10.0f)));
 
             MaxCount = cfg.Bind(
@@ -135,7 +141,23 @@ namespace MahoragaLC.Config
                 "MaxCount",
                 1,
                 new ConfigDescription(
-                    "Maximum concurrent Mahoraga instances allowed on a moon.",
+                    "Maximum concurrent indoor Mahoraga instances allowed on a moon.",
+                    new AcceptableValueRange<int>(1, 5)));
+
+            OutdoorPowerLevel = cfg.Bind(
+                "Spawning",
+                "OutdoorPowerLevel",
+                3.0f,
+                new ConfigDescription(
+                    "Outdoor moon enemy power budget consumed by each outdoor Mahoraga.",
+                    new AcceptableValueRange<float>(1.0f, 10.0f)));
+
+            OutdoorMaxCount = cfg.Bind(
+                "Spawning",
+                "OutdoorMaxCount",
+                1,
+                new ConfigDescription(
+                    "Maximum concurrent outdoor Mahoraga instances allowed on a moon.",
                     new AcceptableValueRange<int>(1, 5)));
 
             // [Combat]
@@ -276,10 +298,10 @@ namespace MahoragaLC.Config
             OldBirdSeekRange = cfg.Bind(
                 "OldBird",
                 "OldBirdSeekRange",
-                70.0f,
+                250.0f,
                 new ConfigDescription(
-                    "Maximum distance (meters) at which Mahoraga goes looking for an Old Bird.",
-                    new AcceptableValueRange<float>(10.0f, 200.0f)));
+                    "Maximum distance (meters) at which Mahoraga goes looking for a living Old Bird in its domain.",
+                    new AcceptableValueRange<float>(10.0f, 500.0f)));
 
             OldBirdHitsToDestroy = cfg.Bind(
                 "OldBird",
@@ -292,7 +314,7 @@ namespace MahoragaLC.Config
             OldBirdEngageMaxSeconds = cfg.Bind(
                 "OldBird",
                 "OldBirdEngageMaxSeconds",
-                45.0f,
+                120.0f,
                 new ConfigDescription(
                     "Hard cap for one hunt against a single Old Bird before Mahoraga gives up (see DisengageCooldownSeconds).",
                     new AcceptableValueRange<float>(10.0f, 300.0f)));
@@ -367,18 +389,6 @@ namespace MahoragaLC.Config
                 true,
                 "If true, other enemies that watch for threats (Old Birds, Baboon Hawks, Giant Kiwis...) can detect Mahoraga and react to it. Takes effect for new sightings immediately.");
 
-            FightEnemies = cfg.Bind(
-                "EnemyInteraction",
-                "FightEnemies",
-                true,
-                "If true, Mahoraga retaliates against enemies that hurt it or block its way (players always come first).");
-
-            EngageEnemiesWhenIdle = cfg.Bind(
-                "EnemyInteraction",
-                "EngageEnemiesWhenIdle",
-                false,
-                "If true, Mahoraga also attacks any killable enemy it sees while patrolling with no player around, without waiting to be provoked.");
-
             EnemyCleaveDamage = cfg.Bind(
                 "EnemyInteraction",
                 "EnemyCleaveDamage",
@@ -408,7 +418,7 @@ namespace MahoragaLC.Config
                 "EnemyGrudgeHalfLifeSeconds",
                 5.0f,
                 new ConfigDescription(
-                    "How long an enemy that hurt Mahoraga stays a retaliation target (aggro weight halves every this many seconds).",
+                    "How long an Old Bird that hurt Mahoraga stays a priority retaliation target (aggro weight halves every this many seconds).",
                     new AcceptableValueRange<float>(1.0f, 30.0f)));
 
             EnemyEngageMaxSeconds = cfg.Bind(
@@ -416,23 +426,15 @@ namespace MahoragaLC.Config
                 "EnemyEngageMaxSeconds",
                 20.0f,
                 new ConfigDescription(
-                    "Hard cap on a single fight against one enemy; afterwards Mahoraga disengages and ignores that enemy for DisengageCooldownSeconds.",
+                    "Fallback engagement cap in seconds; afterwards Mahoraga disengages for DisengageCooldownSeconds.",
                     new AcceptableValueRange<float>(5.0f, 120.0f)));
-
-            ImmortalEnemyEngageSeconds = cfg.Bind(
-                "EnemyInteraction",
-                "ImmortalEnemyEngageSeconds",
-                6.0f,
-                new ConfigDescription(
-                    "Cap for fights against enemies that cannot die (canDie = false): Mahoraga only swats them briefly, never loops forever.",
-                    new AcceptableValueRange<float>(1.0f, 60.0f)));
 
             DisengageCooldownSeconds = cfg.Bind(
                 "EnemyInteraction",
                 "DisengageCooldownSeconds",
                 30.0f,
                 new ConfigDescription(
-                    "After giving up on an enemy (timeout, unreachable, immortal) it is ignored for this long.",
+                    "After giving up on an Old Bird (timeout or unreachable) it is ignored for this long.",
                     new AcceptableValueRange<float>(5.0f, 300.0f)));
 
             // [Movement]
@@ -544,7 +546,26 @@ namespace MahoragaLC.Config
             Dictionary<Levels.LevelTypes, int> levelRarities,
             Dictionary<string, int> customLevelRarities)
         {
-            var parsed = MoonRarityParser.Parse(MoonRarityOverrides.Value);
+            ApplyOverrideString(MoonRarityOverrides.Value, levelRarities, customLevelRarities);
+        }
+
+        public void ApplyOutdoorMoonOverrides(
+            Dictionary<Levels.LevelTypes, int> levelRarities,
+            Dictionary<string, int> customLevelRarities)
+        {
+            ApplyOverrideString(MoonRarityOverrides.Value, levelRarities, customLevelRarities);
+            if (!string.IsNullOrWhiteSpace(OutdoorMoonRarityOverrides.Value))
+            {
+                ApplyOverrideString(OutdoorMoonRarityOverrides.Value, levelRarities, customLevelRarities);
+            }
+        }
+
+        private static void ApplyOverrideString(
+            string rawOverrides,
+            Dictionary<Levels.LevelTypes, int> levelRarities,
+            Dictionary<string, int> customLevelRarities)
+        {
+            var parsed = MoonRarityParser.Parse(rawOverrides);
             foreach (var entry in parsed)
             {
                 if (TryResolveVanillaLevelType(entry.Key, out var levelType))

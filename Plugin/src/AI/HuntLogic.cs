@@ -18,6 +18,16 @@ namespace MahoragaLC.AI
             return currentlyOutside ? y >= -100f : y > -80f;
         }
 
+        /// <summary>
+        /// True when passive non-LOS player hunting is allowed in the current domain.
+        /// Indoors honors <paramref name="huntPlayersIndoors"/>; outdoors requires explicit opt-in via
+        /// <paramref name="huntPlayersOutdoors"/> so outdoor Mahoraga relies on realistic sight &amp; hearing by default.
+        /// </summary>
+        public static bool ShouldHuntWithoutLineOfSight(bool isOutside, bool huntPlayersIndoors, bool huntPlayersOutdoors)
+        {
+            return isOutside ? huntPlayersOutdoors : huntPlayersIndoors;
+        }
+
         public readonly struct Candidate
         {
             public readonly int Id;

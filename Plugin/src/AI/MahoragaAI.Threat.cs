@@ -23,7 +23,7 @@ namespace MahoragaLC.AI
 
         ThreatType IVisibleThreat.type => ThreatType.RadMech;
 
-        bool IVisibleThreat.IsThreatDead() => isEnemyDead;
+        bool IVisibleThreat.IsThreatDead() => isEnemyDead || IsSummonOrSubmergeActive;
 
         GrabbableObject IVisibleThreat.GetHeldObject() => null!;
 
@@ -52,7 +52,7 @@ namespace MahoragaLC.AI
 
         float IVisibleThreat.GetVisibility()
         {
-            if (isEnemyDead)
+            if (isEnemyDead || IsSummonOrSubmergeActive)
             {
                 return 0f;
             }

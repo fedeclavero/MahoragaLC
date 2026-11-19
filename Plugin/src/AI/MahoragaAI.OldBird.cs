@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using GameNetcodeStuff;
+using HarmonyLib;
 using MahoragaLC.Config;
 using Unity.Netcode;
 using UnityEngine;
@@ -14,16 +16,15 @@ namespace MahoragaLC.AI
     /// IsOwner and aborts when !enemyType.canDie unless overrideDestroy. So Mahoraga keeps a per-Old-Bird durability counter
     /// (OldBirdDurability.StrikeDamage; a Slam counts double and a grown Mahoraga hits harder). When it hits zero:
     ///   1. OldBirdDestroyedClientRpc runs on every machine: releases any grabbed player (RadMechAI.CancelTorchPlayerAnimation, public),
-    ///      spawns the Old Bird's own explosion prefab as a PURE VISUAL (no Landmine.SpawnExplosion, which would damage players/enemies
-    ///      and hit Mahoraga itself), a camera shake by distance and the large-explosion clip at the position.
-    ///   2. After a short delay the SERVER despawns the NetworkObject (NetworkObject.Despawn, which is exactly what EnemyAI.KillEnemy(destroy)
-    ///      does server-side; it works whoever owns the Old Bird). EnemyAI.OnDestroy then removes it from SpawnedEnemies, subtracts its
-    ///      power level and runs CancelSpecialAnimationWithPlayer. Missiles in flight (RadMechMissile) destroy themselves when their
-    ///      RadMechScript reference dies; the Old Bird's AudioSources go with it.
+    ///      freezes/silences the Old Bird during the 0.45s despawn delay, spawns its explosion prefab as a PURE VISUAL, a camera
+    ///      shake by distance, and plays the large-explosion clip through a temporary Diagetic-routed 3D AudioSource.
+    ///   2. After 0.45s the SERVER despawns the NetworkObject (NetworkObject.Despawn), removing it from SpawnedEnemies and freeing
+    ///      its power level.
     /// </summary>
     public partial class MahoragaAI
     {
         private const float OldBirdDestructionDelay = 0.45f;
+        private static readonly FieldInfo? RadMechTargetedThreatColliderField = AccessTools.Field(typeof(RadMechAI), "targetedThreatCollider");
 
         private struct PendingDestruction
         {
@@ -33,6 +34,28 @@ namespace MahoragaLC.AI
 
         private readonly Dictionary<int, float> _oldBirdDurability = new Dictionary<int, float>();
         private readonly List<PendingDestruction> _pendingDestructions = new List<PendingDestruction>();
+
+        private bool HasLivingOldBirdInDomainServer()
+        {
+            if (RoundManager.Instance == null)
+            {
+                return false;
+            }
+
+            List<EnemyAI> all = RoundManager.Instance.SpawnedEnemies;
+            for (int i = 0; i < all.Count; i++)
+            {
+                if (all[i] is RadMechAI rad
+                    && !rad.isEnemyDead
+                    && rad.isOutside == isOutside
+                    && !IsDestructionPending(rad))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         private void StrikeOldBirdServer(RadMechAI oldBird, bool isSlam, MahoragaConfig? cfg)
         {
@@ -51,10 +74,10 @@ namespace MahoragaLC.AI
             remaining -= OldBirdDurability.StrikeDamage(isSlam, ScaleFactor);
             _oldBirdDurability[id] = remaining;
 
-            // Hit feedback only: RadMechAI keeps no HP, base HitEnemy just plays the enemy-type hit sound.
+            // RadMech.EnemyType has null hitBodySFX / hitEnemyVoiceSFX, so always pass playHitSFX: false.
             try
             {
-                oldBird.HitEnemyOnLocalClient(1, transform.forward, null, playHitSFX: true, -1);
+                oldBird.HitEnemyOnLocalClient(1, transform.forward, null, playHitSFX: false, -1);
             }
             catch (Exception ex)
             {
@@ -65,6 +88,90 @@ namespace MahoragaLC.AI
             {
                 BeginOldBirdDestructionServer(oldBird);
             }
+            else
+            {
+                AlertOldBirdToSelfServer(oldBird);
+            }
+        }
+
+        private void AlertOldBirdToSelfServer(RadMechAI oldBird)
+        {
+            if (oldBird.isEnemyDead
+                || oldBird.inFlyingMode
+                || oldBird.inTorchPlayerAnimation
+                || oldBird.inSpecialAnimation
+                || !oldBird.ventAnimationFinished
+                || oldBird.currentBehaviourStateIndex == 2)
+            {
+                return;
+            }
+
+            bool needsTargetSwitch = oldBird.targetedThreat == null || !ReferenceEquals(oldBird.targetedThreat.threatScript, this);
+            if (!needsTargetSwitch && oldBird.currentBehaviourStateIndex == 1 && !oldBird.lostCreatureInChase && oldBird.isAlerted)
+            {
+                return;
+            }
+
+            if (oldBird.searchForPlayers != null && oldBird.searchForPlayers.inProgress)
+            {
+                oldBird.StopSearch(oldBird.searchForPlayers);
+            }
+
+            Collider? myCollider = GetMahoragaThreatCollider();
+            if (myCollider != null)
+            {
+                RadMechTargetedThreatColliderField?.SetValue(oldBird, myCollider);
+            }
+
+            Vector3 chest = transform.position + Vector3.up * (1.8f * ScaleFactor);
+            Vector3 eyePos = oldBird.eye != null ? oldBird.eye.position : oldBird.transform.position + Vector3.up * 8.85f;
+            float dist = Vector3.Distance(eyePos, chest);
+
+            if (oldBird.targetedThreat == null)
+            {
+                oldBird.targetedThreat = new Threat();
+            }
+
+            oldBird.SetTargetedThreat(this, chest, dist);
+            oldBird.focusedThreatTransform = transform;
+            oldBird.lostCreatureInChase = false;
+            oldBird.losTimer = 0f;
+            oldBird.hasLOS = true;
+
+            oldBird.SwitchToBehaviourStateOnLocalClient(1);
+
+            NetworkObject? selfNo = thisNetworkObject != null ? thisNetworkObject : NetworkObject;
+            NetworkObject? birdNo = oldBird.thisNetworkObject != null ? oldBird.thisNetworkObject : oldBird.NetworkObject;
+            if (selfNo != null && selfNo.IsSpawned && birdNo != null && birdNo.IsSpawned)
+            {
+                oldBird.SetTargetToThreatClientRpc(new NetworkObjectReference(selfNo), chest);
+            }
+
+            oldBird.SetMechAlertedToThreat();
+            if (birdNo != null && birdNo.IsSpawned)
+            {
+                oldBird.SetMechAlertedClientRpc();
+            }
+        }
+
+        private Collider? GetMahoragaThreatCollider()
+        {
+            EnemyAICollisionDetect[] detectors = GetComponentsInChildren<EnemyAICollisionDetect>(includeInactive: false);
+            for (int i = 0; i < detectors.Length; i++)
+            {
+                if (detectors[i] == null)
+                {
+                    continue;
+                }
+
+                Collider? col = detectors[i].GetComponent<Collider>();
+                if (col != null && col.enabled)
+                {
+                    return col;
+                }
+            }
+
+            return null;
         }
 
         private bool IsDestructionPending(RadMechAI oldBird)
@@ -139,7 +246,7 @@ namespace MahoragaLC.AI
             }
 
             // Release a grabbed / torched player before the Old Bird disappears (CancelSpecialAnimationWithPlayer alone leaves
-            // freeRotationInInteractAnimation and the dead-body attachment behind).
+            // freeRotationInInteractAnimation and the dead-body attachment behind), then freeze & silence it during the 0.45s delay.
             if (oldBird != null)
             {
                 try
@@ -149,6 +256,31 @@ namespace MahoragaLC.AI
                 catch (Exception ex)
                 {
                     Plugin.Logger.LogWarning($"[OldBird] could not release grabbed player: {ex.Message}");
+                }
+
+                oldBird.isEnemyDead = true;
+                oldBird.inFlyingMode = false;
+                oldBird.aimingGun = false;
+                oldBird.attemptingGrab = false;
+
+                try
+                {
+                    oldBird.SetChargingForwardOnLocalClient(false);
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Logger.LogWarning($"[OldBird] could not clear charging state: {ex.Message}");
+                }
+
+                if (oldBird.LocalLRADAudio != null) oldBird.LocalLRADAudio.Stop();
+                if (oldBird.LocalLRADAudio2 != null) oldBird.LocalLRADAudio2.Stop();
+                if (oldBird.engineSFX != null) oldBird.engineSFX.Stop();
+                if (oldBird.flyingDistantAudio != null) oldBird.flyingDistantAudio.Stop();
+                if (oldBird.chargeForwardAudio != null) oldBird.chargeForwardAudio.Stop();
+
+                if (IsServer && oldBird.agent != null)
+                {
+                    oldBird.agent.enabled = false;
                 }
             }
 
@@ -177,7 +309,13 @@ namespace MahoragaLC.AI
                 AudioClip clip = oldBird.largeExplosionSFX[UnityEngine.Random.Range(0, oldBird.largeExplosionSFX.Length)];
                 if (clip != null)
                 {
-                    AudioSource.PlayClipAtPoint(clip, position + Vector3.up * 2f, 1f);
+                    AudioSource? mixerTemplate = audioController != null && audioController.bodySource != null
+                        ? audioController.bodySource
+                        : oldBird.explosionAudio;
+                    AudioSource? spatialTemplate = oldBird.explosionAudio != null
+                        ? oldBird.explosionAudio
+                        : mixerTemplate;
+                    PlaySpatialClipAtPoint(clip, position + Vector3.up * 2f, mixerTemplate, spatialTemplate);
                 }
             }
 
@@ -194,6 +332,53 @@ namespace MahoragaLC.AI
                     HUDManager.Instance.ShakeCamera(ScreenShakeType.Small);
                 }
             }
+        }
+
+        private static void PlaySpatialClipAtPoint(AudioClip clip, Vector3 position, AudioSource? mixerTemplate, AudioSource? spatialTemplate)
+        {
+            Transform? parent = RoundManager.Instance != null && RoundManager.Instance.mapPropsContainer != null
+                ? RoundManager.Instance.mapPropsContainer.transform
+                : null;
+            var go = new GameObject("MahoragaOldBirdExplosionSFX");
+            if (parent != null)
+            {
+                go.transform.SetParent(parent, worldPositionStays: true);
+            }
+            go.transform.position = position;
+
+            AudioSource src = go.AddComponent<AudioSource>();
+            src.clip = clip;
+            src.playOnAwake = false;
+            src.loop = false;
+            src.volume = 1f;
+            src.spatialBlend = 1f;
+            src.dopplerLevel = 0f;
+
+            if (mixerTemplate != null)
+            {
+                src.outputAudioMixerGroup = mixerTemplate.outputAudioMixerGroup;
+            }
+
+            if (spatialTemplate != null)
+            {
+                src.rolloffMode = spatialTemplate.rolloffMode;
+                src.minDistance = spatialTemplate.minDistance;
+                src.maxDistance = spatialTemplate.maxDistance;
+                if (spatialTemplate.rolloffMode == AudioRolloffMode.Custom)
+                {
+                    src.SetCustomCurve(
+                        AudioSourceCurveType.CustomRolloff,
+                        spatialTemplate.GetCustomCurve(AudioSourceCurveType.CustomRolloff));
+                }
+            }
+            else
+            {
+                src.minDistance = 4f;
+                src.maxDistance = 65f;
+            }
+
+            src.Play();
+            Destroy(go, clip.length + 0.25f);
         }
     }
 }

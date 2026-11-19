@@ -18,7 +18,7 @@ namespace MahoragaLC.AI
     /// </summary>
     public partial class MahoragaAI
     {
-        private const float BaseHeightMeters = 3.75f; // ASSET_CONTRACT: feet-to-skull height at scale 1.
+        private const float BaseHeightMeters = 3.41f; // ASSET_CONTRACT: feet-to-skull height at scale 1.
 
         private float _currentScale = 1f;
         private float _targetScale = 1f;
@@ -41,7 +41,7 @@ namespace MahoragaLC.AI
         private readonly Dictionary<int, float> _oldBirdHeights = new Dictionary<int, float>();
 
         /// <summary>Current size multiplier (always &gt;= 1) used to scale reach / knockback.</summary>
-        private float ScaleFactor => _currentScale < 1f ? 1f : _currentScale;
+        internal float ScaleFactor => _currentScale < 1f ? 1f : _currentScale;
 
         private void ResolveScaleRefs()
         {
@@ -98,6 +98,13 @@ namespace MahoragaLC.AI
                 }
 
                 eye.localPosition = _eyeBasePos * s;
+            }
+
+            if (IsServer && isOutside && agent != null)
+            {
+                float baseRadius = _baseAgentRadius > 0.01f ? _baseAgentRadius : 0.85f;
+                agent.radius = baseRadius * Mathf.Lerp(1f, s, 0.7f);
+                agent.stoppingDistance = 0.50f * s;
             }
 
             _appliedScale = s;

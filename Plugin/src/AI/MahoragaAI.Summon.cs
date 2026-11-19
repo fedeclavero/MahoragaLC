@@ -1,22 +1,26 @@
+using GameNetcodeStuff;
 using MahoragaLC.Config;
 using MahoragaLC.Effects;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace MahoragaLC.AI
 {
     /// <summary>
     /// Summoning sequence (state 5): Mahoraga is called out of a pool of black shadow like Megumi's Ten Shadows
-    /// ritual in Shibuya. The server decides when it starts (always at spawn) and when it ends; every machine
-    /// plays the presentation from its own local clock, driven by the pure SummonTimeline curves.
+    /// ritual in Shibuya. The server decides when it starts (at spawn or after a Shadow Ambush warp) and when it ends;
+    /// every machine plays the presentation from its own local clock, driven by the pure SummonTimeline curves.
     ///
     /// Network model:
-    ///  - StartSummonClientRpc(duration): sent once by the server from Start(); clients start their clock at 0.
+    ///  - StartSummonClientRpc(duration): sent once by the server; clients start their clock at 0.
     ///  - ApplySummonSyncClientRpc(elapsed, duration): sent only to a client that asks for a full sync while the
     ///    sequence is running (late join / late spawn), so it resumes at the right moment (no replay of old sounds).
     ///  - The end is the normal SyncBehaviourStateClientRpc that leaves state 5 (server) plus each client's own
     ///    clock reaching the duration, so a lost/late message can never leave the model stuck below the floor.
-    ///  - The rise moves the visual child "ModelContainer" only; the root with the NavMeshAgent never moves.
+    ///  - The rise moves the visual child "SummonOffset" only; the root with the NavMeshAgent never moves.
+    ///  - The Dharma wheel advances exactly +45 deg (1 spoke, 1 ball -> next ball) during summon and folds into
+    ///    _summonWheelOffsetSteps when summon ends so the wheel never snaps back 45 -> 0.
     /// </summary>
     public partial class MahoragaAI
     {
@@ -45,18 +49,28 @@ namespace MahoragaLC.AI
         private float _summonSpawnTime;
         private bool _renderersVisible = true;
         private float _summonWheelExtraAngle;
+        private int _summonWheelOffsetSteps;
+        private bool _summonWheelFolded;
         private float _summonClipLength = -1f;
 
         /// <summary>True while the invocation is running (state 5 or the local presentation clock).</summary>
         public bool IsSummoning => _summonActive || currentBehaviourStateIndex == (int)MahoragaState.Summoning;
 
-        private bool IsSummonInvulnerable => IsSummoning;
+        /// <summary>True while either Summon_Emerge (state 5) or Summon_Submerge (state 7) is active.</summary>
+        internal bool IsSummonOrSubmergeActive => IsSummoning || IsSubmerging;
+
+        private bool IsSummonInvulnerable => IsSummonOrSubmergeActive;
+
+        private float ComputeWheelAngle(int adaptationWheelSteps)
+        {
+            return (adaptationWheelSteps + _summonWheelOffsetSteps) * SummonTimeline.WheelTurnDegrees;
+        }
 
         /// <summary>
         /// Finds (or, for bundles built before this feature, creates) the dedicated "SummonOffset" pivot between the
         /// root and "ModelContainer". Hierarchy: MahoragaPrefab / SummonOffset / ModelContainer / Mahoraga.
-        /// Only SummonOffset.localPosition is ever written by the summoning; no scale is touched anywhere, so other
-        /// systems (growth) can scale the root or ModelContainer independently.
+        /// Only SummonOffset.localPosition is ever written by the summoning/submerging; no scale is touched anywhere,
+        /// so other systems (growth) can scale ModelContainer independently.
         /// </summary>
         private void ResolveSummonPivot()
         {
@@ -95,7 +109,8 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            if (UnityEngine.AI.NavMesh.SamplePosition(transform.position, out UnityEngine.AI.NavMeshHit hit, 8f, agentMask))
+            int mask = agent.areaMask != 0 ? agent.areaMask : agentMask;
+            if (NavMesh.SamplePosition(transform.position, out NavMeshHit hit, 8f, mask))
             {
                 agent.Warp(hit.position);
                 Plugin.Logger.LogWarning($"Mahoraga spawned off the NavMesh at {transform.position}; warped to {hit.position}.");
@@ -129,22 +144,29 @@ namespace MahoragaLC.AI
         // Server
         // -------------------------------------------------------------------------------------------------
 
-        /// <summary>Starts the sequence on the server. Returns false when the sequence is disabled.</summary>
-        private bool TryBeginSummonServer(MahoragaConfig? cfg)
+        /// <summary>Starts the summon emergence sequence on the server. Returns false when disabled (unless forced for Shadow Ambush).</summary>
+        private bool TryBeginSummonServer(MahoragaConfig? cfg, bool forceSummon = false)
         {
-            if (cfg == null || !cfg.EnableSummonSequence.Value || isEnemyDead)
+            if (isEnemyDead)
             {
                 return false;
             }
 
-            var timeline = new SummonTimeline(cfg.SummonDuration.Value);
+            if (!forceSummon && (cfg == null || !cfg.EnableSummonSequence.Value))
+            {
+                return false;
+            }
 
+            float duration = cfg != null ? cfg.SummonDuration.Value : SummonTimeline.ReferenceDuration;
+            var timeline = new SummonTimeline(duration);
+
+            _forcingDoor = null;
+            StopSearch(currentSearch);
+
+            EnsureBehaviourStatesArray();
             previousBehaviourStateIndex = currentBehaviourStateIndex;
             currentBehaviourStateIndex = (int)MahoragaState.Summoning;
-            if (enemyBehaviourStates != null && enemyBehaviourStates.Length > (int)MahoragaState.Summoning)
-            {
-                currentBehaviourState = enemyBehaviourStates[(int)MahoragaState.Summoning];
-            }
+            currentBehaviourState = enemyBehaviourStates[(int)MahoragaState.Summoning];
 
             targetPlayer = null;
             movingTowardsTargetPlayer = false;
@@ -185,6 +207,21 @@ namespace MahoragaLC.AI
 
             // The summon roar already announced him: do not roar again the instant he starts chasing.
             _roarCooldownTimer = Mathf.Max(_roarCooldownTimer, RoarCooldownSeconds * 0.5f);
+            RecordPlayerSightServer();
+
+            int ambushClientId = _pendingAmbushTargetClientId;
+            _pendingAmbushTargetClientId = -1;
+            if (ambushClientId >= 0)
+            {
+                PlayerControllerB? ambushVictim = ResolvePlayerByClientId(ambushClientId);
+                if (ambushVictim != null && PlayerIsTargetable(ambushVictim) &&
+                    (HasLineOfSightToPlayer(ambushVictim, isOutside ? 48f : 35f) ||
+                     Vector3.Distance(transform.position, ambushVictim.transform.position) <= 12f))
+                {
+                    EnterChaseStateServer(ambushVictim);
+                    return;
+                }
+            }
 
             EnterPatrolStateServer();
         }
@@ -203,15 +240,17 @@ namespace MahoragaLC.AI
 
         private void StartSummonLocal(float duration, float elapsed)
         {
+            _submergeActive = false;
             _summonTimeline = new SummonTimeline(duration);
             _summonElapsed = Mathf.Max(0f, elapsed);
             _summonActive = true;
             _summonPreHidden = false;
             _summonWheelExtraAngle = 0f;
+            _summonWheelFolded = false;
 
+            EnsureBehaviourStatesArray();
             previousBehaviourStateIndex = currentBehaviourStateIndex;
             currentBehaviourStateIndex = (int)MahoragaState.Summoning;
-            EnsureBehaviourStatesArray();
             currentBehaviourState = enemyBehaviourStates[(int)MahoragaState.Summoning];
 
             // Events that are already in the past for a late joiner are marked done so they are not replayed.
@@ -230,10 +269,11 @@ namespace MahoragaLC.AI
                 _summonEffect = GetComponentInChildren<MahoragaSummonEffect>(includeInactive: true);
             }
 
-            _summonEffect?.Begin(SummonTimeline.PoolRadius);
+            _summonEffect?.Begin(SummonTimeline.PoolRadius * ScaleFactor);
 
             if (creatureAnimator != null)
             {
+                creatureAnimator.ResetTrigger(SubmergeHash);
                 creatureAnimator.SetFloat(SummonSpeedHash, ComputeSummonAnimatorSpeed(tl.Duration));
                 if (t <= 0.02f)
                 {
@@ -292,7 +332,7 @@ namespace MahoragaLC.AI
         /// <summary>Per-frame driver (all machines). Called from Update().</summary>
         private void UpdateSummon(float dt)
         {
-            if (_summonPreHidden && !_summonActive && Time.time - _summonSpawnTime > PreHideTimeoutSeconds)
+            if (_summonPreHidden && !_summonActive && !_submergeActive && Time.time - _summonSpawnTime > PreHideTimeoutSeconds)
             {
                 RevealModel();
             }
@@ -309,9 +349,9 @@ namespace MahoragaLC.AI
             }
 
             // Invulnerable also means un-stunnable (ZapGun re-applies stunnedIndefinitely after SetEnemyStunned).
-            if (stunNormalizedTimer > 0f)
+            if (stunNormalizedTimer >= 0f)
             {
-                stunNormalizedTimer = 0f;
+                stunNormalizedTimer = -1f;
             }
 
             if (stunnedIndefinitely > 0)
@@ -407,13 +447,13 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            GameNetcodeStuff.PlayerControllerB? local = GameNetworkManager.Instance.localPlayerController;
+            PlayerControllerB? local = GameNetworkManager.Instance.localPlayerController;
             if (local == null)
             {
                 return;
             }
 
-            GameNetcodeStuff.PlayerControllerB listener = local.isPlayerDead && local.spectatedPlayerScript != null
+            PlayerControllerB listener = local.isPlayerDead && local.spectatedPlayerScript != null
                 ? local.spectatedPlayerScript
                 : local;
 
@@ -428,9 +468,23 @@ namespace MahoragaLC.AI
             }
         }
 
-        /// <summary>Returns everything to the normal, fully emerged state (idempotent).</summary>
+        /// <summary>
+        /// Returns everything to the normal, fully emerged state (idempotent).
+        /// Folds the summon's +45 deg Dharma wheel turn permanently into _summonWheelOffsetSteps so the
+        /// wheel never snaps back 45 -> 0.
+        /// </summary>
         private void EndSummonPresentation()
         {
+            if (!_summonWheelFolded && _summonWheelExtraAngle >= SummonTimeline.WheelTurnDegrees * 0.5f)
+            {
+                _summonWheelFolded = true;
+                _summonWheelOffsetSteps++;
+                if (!_wheelSpinActive)
+                {
+                    _wheelDisplayAngle = ComputeWheelAngle(_adaptation.WheelStepCount);
+                }
+            }
+
             _summonActive = false;
             _summonPreHidden = false;
             _summonWheelExtraAngle = 0f;
@@ -445,13 +499,14 @@ namespace MahoragaLC.AI
             _summonPreHidden = false;
             ApplyModelOffset(0f);
             SetRenderersVisible(true);
+            ApplyBodyTint(1f);
         }
 
         private void ApplyModelOffset(float yOffset)
         {
             if (_summonOffsetPivot != null)
             {
-                _summonOffsetPivot.localPosition = _modelBaseLocalPosition + Vector3.up * yOffset;
+                _summonOffsetPivot.localPosition = _modelBaseLocalPosition + Vector3.up * (yOffset * ScaleFactor);
             }
         }
 

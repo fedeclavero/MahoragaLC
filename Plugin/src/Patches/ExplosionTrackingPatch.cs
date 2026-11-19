@@ -69,6 +69,11 @@ namespace MahoragaLC.Patches
         [HarmonyPrefix]
         private static void OnRadMechSetExplosion(RadMechAI __instance, Vector3 explosionPosition, Vector3 forwardRotation)
         {
+            if (__instance == null)
+            {
+                return;
+            }
+
             MissileRing[_missileCursor] = new MissileEvent
             {
                 Position = explosionPosition - forwardRotation * 0.1f,
@@ -83,6 +88,8 @@ namespace MahoragaLC.Patches
         public static bool HasRecentMissileNear(Vector3 worldPos, float now, out EnemyAI? source, float maxAge = 0.25f, float extraMargin = 2.0f)
         {
             source = null;
+            float bestDistSq = float.MaxValue;
+            bool found = false;
             for (int i = 0; i < BufferCapacity; i++)
             {
                 MissileEvent evt = MissileRing[i];
@@ -98,14 +105,16 @@ namespace MahoragaLC.Patches
                 }
 
                 float maxDist = evt.Range + extraMargin;
-                if ((worldPos - evt.Position).sqrMagnitude <= maxDist * maxDist)
+                float distSq = (worldPos - evt.Position).sqrMagnitude;
+                if (distSq <= maxDist * maxDist && distSq < bestDistSq)
                 {
+                    bestDistSq = distSq;
                     source = evt.Source;
-                    return true;
+                    found = true;
                 }
             }
 
-            return false;
+            return found;
         }
 
         public static bool HasRecentExplosionNear(Vector3 worldPos, float now, float maxAge = 0.25f, float extraMargin = 5.0f)

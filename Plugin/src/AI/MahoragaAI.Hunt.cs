@@ -47,7 +47,8 @@ namespace MahoragaLC.AI
         /// </summary>
         private bool TryRunHuntServer(MahoragaConfig? cfg)
         {
-            if (cfg == null || !cfg.HuntPlayers.Value || isEnemyDead)
+            if (cfg == null || isEnemyDead ||
+                !HuntLogic.ShouldHuntWithoutLineOfSight(isOutside, cfg.HuntPlayers.Value, cfg.HuntPlayersOutdoors.Value))
             {
                 return false;
             }
@@ -194,14 +195,8 @@ namespace MahoragaLC.AI
                     continue;
                 }
 
-                Vector3 navPos = RoundManager.Instance.GetNavMeshPosition(
-                    p.transform.position,
-                    RoundManager.Instance.navHit,
-                    2.7f,
-                    agentMask);
-
-                if (!RoundManager.Instance.GotNavMeshPositionResult ||
-                    !agent.CalculatePath(navPos, _huntPath) ||
+                if (!NavMesh.SamplePosition(p.transform.position, out NavMeshHit navHit, 2.7f, agent.areaMask) ||
+                    !agent.CalculatePath(navHit.position, _huntPath) ||
                     _huntPath.status != NavMeshPathStatus.PathComplete)
                 {
                     // Not reachable (other side of a gap, elevator, no navmesh under them): try someone else for a while.
@@ -214,11 +209,16 @@ namespace MahoragaLC.AI
                 {
                     bestLength = length;
                     best = p;
-                    bestNavPos = navPos;
+                    bestNavPos = navHit.position;
                 }
             }
 
             if (best == null)
+            {
+                return false;
+            }
+
+            if (!SetSafeDestinationServer(bestNavPos, 2.7f))
             {
                 return false;
             }
@@ -231,20 +231,13 @@ namespace MahoragaLC.AI
                 StopSearch(currentSearch);
             }
 
-            SetDestinationToPosition(bestNavPos);
             return true;
         }
 
         private void SetHuntDestination(PlayerControllerB player)
         {
-            Vector3 navPos = RoundManager.Instance.GetNavMeshPosition(
-                player.transform.position,
-                RoundManager.Instance.navHit,
-                2.7f,
-                agentMask);
-
             _huntDestinationPlayerPos = player.transform.position;
-            SetDestinationToPosition(navPos);
+            SetSafeDestinationServer(player.transform.position, 2.7f);
         }
 
         private float HuntPathLength(NavMeshPath path, float straightLineFallback)

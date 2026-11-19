@@ -10,7 +10,10 @@
     <Compile Include="../src/AI/MahoragaAdaptationSystem.cs" Link="MahoragaAdaptationSystem.cs" />
     <Compile Include="../src/AI/MahoragaCombatLogic.cs" Link="MahoragaCombatLogic.cs" />
     <Compile Include="../src/Configuration/MoonRarityParser.cs" Link="MoonRarityParser.cs" />
+    <Compile Include="../src/Configuration/PluginConfig.cs" Link="PluginConfig.cs" />
+    <Compile Include="../src/Configuration/PluginConfig.SummonHunt.cs" Link="PluginConfig.SummonHunt.cs" />
     <Compile Include="../src/AI/SummonTimeline.cs" Link="SummonTimeline.cs" />
     <Compile Include="../src/AI/HuntLogic.cs" Link="HuntLogic.cs" />
+    <Compile Include="../src/AI/ShadowAmbushLogic.cs" Link="ShadowAmbushLogic.cs" />
   </ItemGroup>
 </Project>

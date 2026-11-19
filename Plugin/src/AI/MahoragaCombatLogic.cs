@@ -236,6 +236,42 @@ namespace MahoragaLC.AI
 
             return EngageVerdict.Continue;
         }
+
+        /// <summary>
+        /// Old Bird engagement evaluation: Old Birds are #1 priority (never preempted by players and always destroyable),
+        /// terminating only on target disappearance, hard timeout, unreachable pathing, or extreme range.
+        /// </summary>
+        public static EngageVerdict EvaluateOldBird(
+            bool targetValid,
+            float engagedSeconds,
+            float maxEngageSeconds,
+            float unreachableSeconds,
+            float unreachableLimitSeconds,
+            float distanceToTarget,
+            float maxDistance)
+        {
+            if (!targetValid)
+            {
+                return EngageVerdict.TargetGone;
+            }
+
+            if (engagedSeconds >= maxEngageSeconds)
+            {
+                return EngageVerdict.TimedOut;
+            }
+
+            if (unreachableSeconds >= unreachableLimitSeconds)
+            {
+                return EngageVerdict.Unreachable;
+            }
+
+            if (distanceToTarget > maxDistance)
+            {
+                return EngageVerdict.TooFar;
+            }
+
+            return EngageVerdict.Continue;
+        }
     }
 
     /// <summary>Knockback sizing helpers (pure so scaling is testable).</summary>

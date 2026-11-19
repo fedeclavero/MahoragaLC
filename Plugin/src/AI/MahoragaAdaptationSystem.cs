@@ -282,6 +282,13 @@ namespace MahoragaLC.AI
             _wheelStepCount = Math.Max(0, wheelStepCount);
         }
 
+        /// <summary>Advances the Dharma Wheel by +1 spoke (+45°) for post-adaptation Old Bird / growth hits.</summary>
+        public int AdvanceWheelStep()
+        {
+            _wheelStepCount++;
+            return _wheelStepCount;
+        }
+
         public bool IsDuplicateExplosion(float now, float windowSeconds = ExplosionDedupWindowSeconds)
         {
             return (now - _lastExplosionHitTime) <= windowSeconds;

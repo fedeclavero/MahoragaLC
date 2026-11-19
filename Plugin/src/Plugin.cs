@@ -38,6 +38,7 @@ namespace MahoragaLC
         internal static MahoragaConfig BoundConfig { get; private set; } = null!;
         internal static string PluginDirectory { get; private set; } = string.Empty;
         internal static AssetBundle? ModAssets { get; private set; }
+        internal static TerminalNode? BestiaryNode { get; private set; }
         internal static Dictionary<string, AudioClip> CachedAudioClips { get; } = new Dictionary<string, AudioClip>(StringComparer.Ordinal);
 
         private Harmony? _harmony;
@@ -75,8 +76,12 @@ namespace MahoragaLC
 
             EnemyType? mahoragaEnemyType = ModAssets.LoadAsset<EnemyType>("MahoragaEnemyType");
             GameObject? mahoragaPrefab = ModAssets.LoadAsset<GameObject>("MahoragaPrefab");
+            EnemyType? outdoorEnemyType = ModAssets.LoadAsset<EnemyType>("MahoragaEnemyType_Outside");
+            GameObject? outdoorPrefab = ModAssets.LoadAsset<GameObject>("MahoragaPrefab_Outside");
             TerminalNode? mahoragaTerminalNode = ModAssets.LoadAsset<TerminalNode>("MahoragaTerminalNode");
             TerminalKeyword? mahoragaTerminalKeyword = ModAssets.LoadAsset<TerminalKeyword>("MahoragaTerminalKeyword");
+
+            BestiaryNode = mahoragaTerminalNode;
 
             if (mahoragaEnemyType == null)
             {
@@ -95,18 +100,46 @@ namespace MahoragaLC
                 return;
             }
 
+            if (outdoorPrefab == null && outdoorEnemyType != null)
+            {
+                outdoorPrefab = outdoorEnemyType.enemyPrefab;
+            }
+
+            bool hasDedicatedOutdoorAssets = outdoorEnemyType != null && outdoorPrefab != null;
+            if (!hasDedicatedOutdoorAssets)
+            {
+                Logger.LogWarning(
+                    "AssetBundle 'mahoraga_assets' is missing 'MahoragaEnemyType_Outside' or 'MahoragaPrefab_Outside' (legacy bundle fallback). " +
+                    "Outdoor spawning will fall back to cloning the indoor EnemyType until the AssetBundle is rebuilt.");
+            }
+
             mahoragaEnemyType.enemyPrefab = mahoragaPrefab;
             CacheBundleAudioClips(ModAssets);
 
-            // 4. Apply runtime config values & repair AudioMixer groups (Diagetic).
+            // 4. Apply runtime config values & repair AudioMixer groups (Diagetic) on BOTH indoor and outdoor prefabs.
             mahoragaEnemyType.PowerLevel = BoundConfig.PowerLevel.Value;
             mahoragaEnemyType.MaxCount = BoundConfig.MaxCount.Value;
             mahoragaEnemyType.isOutsideEnemy = false;
             mahoragaEnemyType.isDaytimeEnemy = false;
             Utilities.FixMixerGroups(mahoragaPrefab);
 
-            // 5. Register NetworkPrefab with LethalLib / NGO.
+            // 5. Register NetworkPrefabs with LethalLib / NGO (register outdoor prefab whenever present so clients match host hashes).
             NetworkPrefabs.RegisterNetworkPrefab(mahoragaPrefab);
+
+            if (hasDedicatedOutdoorAssets)
+            {
+                outdoorEnemyType!.enemyPrefab = outdoorPrefab;
+                outdoorEnemyType.PowerLevel = BoundConfig.OutdoorPowerLevel.Value;
+                outdoorEnemyType.MaxCount = BoundConfig.OutdoorMaxCount.Value;
+                outdoorEnemyType.isOutsideEnemy = true;
+                outdoorEnemyType.isDaytimeEnemy = false;
+                Utilities.FixMixerGroups(outdoorPrefab!);
+
+                if (outdoorPrefab != mahoragaPrefab)
+                {
+                    NetworkPrefabs.RegisterNetworkPrefab(outdoorPrefab!);
+                }
+            }
 
             // 6. Register interior enemy across ALL vanilla & modded moons using LethalLib 1.2.0 Overload 3.
             var levelRarities = new Dictionary<Levels.LevelTypes, int>
@@ -125,34 +158,51 @@ namespace MahoragaLC
                 mahoragaTerminalNode,
                 mahoragaTerminalKeyword);
 
-            // Optional outdoor spawn profile (clone without duplicating Bestiary Terminal entries).
+            // Dedicated outdoor spawn profile (no duplicate Bestiary Terminal entry; MahoragaAI.Start syncs ScanNodeProperties.creatureScanID).
             if (BoundConfig.AllowOutdoorSpawn.Value)
             {
-                EnemyType outdoorEnemyType = Instantiate(mahoragaEnemyType);
-                outdoorEnemyType.name = "MahoragaEnemyType_Outside";
-                outdoorEnemyType.isOutsideEnemy = true;
-                outdoorEnemyType.enemyPrefab = mahoragaPrefab;
+                EnemyType registeredOutdoorType;
+                if (hasDedicatedOutdoorAssets)
+                {
+                    registeredOutdoorType = outdoorEnemyType!;
+                }
+                else
+                {
+                    registeredOutdoorType = Instantiate(mahoragaEnemyType);
+                    registeredOutdoorType.name = "MahoragaEnemyType_Outside";
+                    registeredOutdoorType.isOutsideEnemy = true;
+                    registeredOutdoorType.isDaytimeEnemy = false;
+                    registeredOutdoorType.PowerLevel = BoundConfig.OutdoorPowerLevel.Value;
+                    registeredOutdoorType.MaxCount = BoundConfig.OutdoorMaxCount.Value;
+                    registeredOutdoorType.enemyPrefab = mahoragaPrefab;
+                }
 
                 var outsideRarities = new Dictionary<Levels.LevelTypes, int>
                 {
                     { Levels.LevelTypes.All, BoundConfig.OutdoorRarity.Value },
                     { Levels.LevelTypes.Modded, BoundConfig.OutdoorRarity.Value }
                 };
+                var outsideCustomLevelRarities = new Dictionary<string, int>();
+                BoundConfig.ApplyOutdoorMoonOverrides(outsideRarities, outsideCustomLevelRarities);
 
                 Enemies.RegisterEnemy(
-                    outdoorEnemyType,
+                    registeredOutdoorType,
                     Enemies.SpawnType.Outside,
                     outsideRarities,
-                    customLevelRarities: null,
+                    outsideCustomLevelRarities,
                     infoNode: null!,
                     infoKeyword: null!);
             }
 
-            // 7. Apply minimal Harmony hooks for deterministic explosion & flashbang tracking.
+            // 7. Apply minimal Harmony hooks for deterministic explosion tracking & Old Bird compatibility.
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll(typeof(ExplosionTrackingPatch));
+            _harmony.PatchAll(typeof(OldBirdCompatibilityPatch));
 
-            Logger.LogInfo($"{PluginGuid} v{PluginVersion} loaded! Interior rarity={BoundConfig.DefaultInteriorRarity.Value}, Outdoor={BoundConfig.AllowOutdoorSpawn.Value}, MaxHP={BoundConfig.MaxHP.Value}, HitsPerAdaptationStage={BoundConfig.HitsPerAdaptationStage.Value}.");
+            Logger.LogInfo(
+                $"{PluginGuid} v{PluginVersion} loaded! Interior rarity={BoundConfig.DefaultInteriorRarity.Value}, " +
+                $"Outdoor={BoundConfig.AllowOutdoorSpawn.Value} (rarity={BoundConfig.OutdoorRarity.Value}, dedicatedAssets={hasDedicatedOutdoorAssets}), " +
+                $"MaxHP={BoundConfig.MaxHP.Value}, HitsPerAdaptationStage={BoundConfig.HitsPerAdaptationStage.Value}.");
         }
 
         private static void CacheBundleAudioClips(AssetBundle bundle)
