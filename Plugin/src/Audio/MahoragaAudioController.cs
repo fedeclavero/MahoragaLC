@@ -23,6 +23,7 @@ namespace MahoragaLC.Audio
         public AudioClip? impactClip;
         public AudioClip? roarClip;
         public AudioClip? deathClip;
+        public AudioClip? summonClip;
 
         internal MahoragaAI? AI { get; private set; }
 
@@ -31,6 +32,9 @@ namespace MahoragaLC.Audio
         public bool IsChasingOrAttacking =>
             AI != null && (AI.currentBehaviourStateIndex == 2 || AI.currentBehaviourStateIndex == 3);
 
+        public bool IsSummoning => AI != null && AI.IsSummoning;
+
+        private AudioSource? _summonSource;
         private float _strideAccum;
         private bool _useSecondFootstep;
 
@@ -88,6 +92,7 @@ namespace MahoragaLC.Audio
             impactClip ??= GetCachedClip("mahoraga_impact");
             roarClip ??= GetCachedClip("mahoraga_roar");
             deathClip ??= GetCachedClip("mahoraga_death");
+            summonClip ??= GetCachedClip("mahoraga_summon");
         }
 
         private static AudioClip? GetCachedClip(string clipName)
@@ -154,6 +159,50 @@ namespace MahoragaLC.Audio
             voiceSource.pitch = 1.0f;
             voiceSource.PlayOneShot(wheelTurnClip, volume);
             WalkieTalkie.TransmitOneShotAudio(voiceSource, wheelTurnClip, volume);
+        }
+
+        /// <summary>
+        /// Deep summoning rumble (mahoraga_summon). Plays on a dedicated runtime AudioSource that clones the voice
+        /// source (same Diagetic mixer group / 3D curve) so it can be started at an arbitrary offset and never
+        /// shares pitch with the roar or the gong that play on the voice source during the sequence.
+        /// </summary>
+        public void PlaySummonRumble(float startOffsetSeconds = 0f)
+        {
+            if (summonClip == null || voiceSource == null)
+            {
+                return;
+            }
+
+            if (startOffsetSeconds >= summonClip.length - 0.05f)
+            {
+                return;
+            }
+
+            if (_summonSource == null)
+            {
+                var go = new GameObject("SummonRumbleSource");
+                go.transform.SetParent(voiceSource.transform, false);
+                _summonSource = go.AddComponent<AudioSource>();
+                _summonSource.playOnAwake = false;
+                _summonSource.loop = false;
+                _summonSource.spatialBlend = 1.0f;
+                _summonSource.rolloffMode = voiceSource.rolloffMode;
+                _summonSource.minDistance = voiceSource.minDistance;
+                _summonSource.maxDistance = voiceSource.maxDistance;
+                _summonSource.dopplerLevel = 0f;
+                _summonSource.outputAudioMixerGroup = voiceSource.outputAudioMixerGroup;
+                if (voiceSource.rolloffMode == AudioRolloffMode.Custom)
+                {
+                    _summonSource.SetCustomCurve(AudioSourceCurveType.CustomRolloff, voiceSource.GetCustomCurve(AudioSourceCurveType.CustomRolloff));
+                }
+            }
+
+            _summonSource.Stop();
+            _summonSource.clip = summonClip;
+            _summonSource.volume = 1.0f;
+            _summonSource.pitch = 1.0f;
+            _summonSource.time = Mathf.Max(0f, startOffsetSeconds);
+            _summonSource.Play();
         }
 
         public void PlayDeflectChime()

@@ -68,6 +68,7 @@
     <Reference Include="$(ManagedDirectory)UnityEngine.AssetBundleModule.dll" Private="false" />
     <Reference Include="$(ManagedDirectory)UnityEngine.AudioModule.dll" Private="false" />
     <Reference Include="$(ManagedDirectory)UnityEngine.PhysicsModule.dll" Private="false" />
+    <Reference Include="$(ManagedDirectory)UnityEngine.ParticleSystemModule.dll" Private="false" />
     <Reference Include="$(ManagedDirectory)UnityEngine.UnityWebRequestModule.dll" Private="false" />
     <Reference Include="$(ManagedDirectory)UnityEngine.UnityWebRequestAudioModule.dll" Private="false" />
     <Reference Include="$(LethalLibPath)" Private="false" />

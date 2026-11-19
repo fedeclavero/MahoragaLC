@@ -15,7 +15,9 @@ namespace MahoragaLC.AI
         Investigating = 1,
         Chasing = 2,
         Attacking = 3,
-        Adapting = 4
+        Adapting = 4,
+        Summoning = 5,
+        EngagingEnemy = 6 // reserved: retaliation against other enemies (combat front)
     }
 
     /// <summary>
@@ -23,7 +25,7 @@ namespace MahoragaLC.AI
     /// Ownership permanently remains on Server/Host (ChangeOwnershipOfEnemy is never called).
     /// All serialized fields strictly match ASSET_CONTRACT.md Section 7.3.
     /// </summary>
-    public class MahoragaAI : EnemyAI
+    public partial class MahoragaAI : EnemyAI
     {
         // Exact SerializedField names required by ASSET_CONTRACT.md Section 7.3
         public Transform? wheelBone;
@@ -119,6 +121,7 @@ namespace MahoragaLC.AI
             ResolvePrefabReferences();
             CacheWheelRestRotation();
             _propBlock = new MaterialPropertyBlock();
+            InitSummonVisuals();
         }
 
         public override void Start()
@@ -130,7 +133,8 @@ namespace MahoragaLC.AI
             CacheWheelRestRotation();
 
             // Sync inside/outside domain with actual spawn elevation (supports outdoor & Imperium spawns).
-            bool spawnedOutside = transform.position.y > -40f;
+            // Uses the game's own -80/-100 split with hysteresis (HuntLogic.IsOutsideAt), not a fixed y > -40.
+            bool spawnedOutside = HuntLogic.IsOutsideAt(transform.position.y, isOutside);
             if (isOutside != spawnedOutside)
             {
                 SetEnemyOutside(spawnedOutside);
@@ -149,7 +153,13 @@ namespace MahoragaLC.AI
             {
                 currentBehaviourStateIndex = (int)MahoragaState.Patrolling;
                 currentBehaviourState = enemyBehaviourStates[0];
-                StartSearch(transform.position);
+                EnsureAgentOnNavMeshServer();
+
+                // Spawn = summoning sequence (state 5); it hands over to patrol/hunt when it ends.
+                if (!TryBeginSummonServer(cfg))
+                {
+                    StartSearch(transform.position);
+                }
             }
             else if (NetworkObject != null && NetworkObject.IsSpawned)
             {
@@ -159,14 +169,15 @@ namespace MahoragaLC.AI
 
         private void EnsureBehaviourStatesArray()
         {
-            if (enemyBehaviourStates != null && enemyBehaviourStates.Length >= 5)
+            const int StateCount = 7;
+            if (enemyBehaviourStates != null && enemyBehaviourStates.Length >= StateCount)
             {
                 return;
             }
 
-            string[] names = { "Patrolling", "Investigating", "Chasing", "Attacking", "Adapting" };
-            var states = new EnemyBehaviourState[5];
-            for (int i = 0; i < 5; i++)
+            string[] names = { "Patrolling", "Investigating", "Chasing", "Attacking", "Adapting", "Summoning", "EngagingEnemy" };
+            var states = new EnemyBehaviourState[StateCount];
+            for (int i = 0; i < StateCount; i++)
             {
                 states[i] = (enemyBehaviourStates != null && i < enemyBehaviourStates.Length && enemyBehaviourStates[i] != null)
                     ? enemyBehaviourStates[i]
@@ -261,6 +272,7 @@ namespace MahoragaLC.AI
             }
 
             UpdateClientPresentation(dt);
+            UpdateSummon(dt);
 
             if (!IsServer || isEnemyDead)
             {
@@ -280,7 +292,7 @@ namespace MahoragaLC.AI
                 }
 
                 // Deterministic cumulative +45° per turn around WheelBone local Y (hub normal).
-                wheelBone.localRotation = _wheelRestLocalRotation * Quaternion.Euler(0f, _wheelDisplayAngle, 0f);
+                wheelBone.localRotation = _wheelRestLocalRotation * Quaternion.Euler(0f, _wheelDisplayAngle + _summonWheelExtraAngle, 0f);
             }
         }
 
@@ -514,6 +526,12 @@ namespace MahoragaLC.AI
                 return;
             }
 
+            // Summoning: motionless until the sequence ends (no destination, no search, no attacks).
+            if (IsSummoning)
+            {
+                return;
+            }
+
             base.DoAIInterval();
 
             if (currentBehaviourStateIndex == (int)MahoragaState.Adapting ||
@@ -566,6 +584,12 @@ namespace MahoragaLC.AI
             if (spotted != null)
             {
                 EnterChaseStateServer(spotted);
+                return;
+            }
+
+            // No line of sight: go looking for the closest reachable player (falls back to node patrol).
+            if (TryRunHuntServer(cfg))
+            {
                 return;
             }
 
@@ -1075,7 +1099,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            bool noiseOutside = noisePosition.y > -40f;
+            bool noiseOutside = HuntLogic.IsOutsideAt(noisePosition.y, isOutside);
             if (noiseOutside != isOutside)
             {
                 return;
@@ -1092,6 +1116,12 @@ namespace MahoragaLC.AI
 
         public override void HitEnemy(int force = 1, PlayerControllerB? playerWhoHit = null, bool playHitSFX = false, int hitID = -1)
         {
+            // Invulnerable while being summoned.
+            if (IsSummonInvulnerable)
+            {
+                return;
+            }
+
             // Suppress base PlayOneShot(hitEnemyVoiceSFX) null warnings; handle impact/deflect SFX cleanly ourselves.
             base.HitEnemy(force, playerWhoHit, playHitSFX: false, hitID);
 
@@ -1217,6 +1247,14 @@ namespace MahoragaLC.AI
                 return;
             }
 
+            // Invulnerable while being summoned: stuns are negated.
+            if (IsSummonInvulnerable)
+            {
+                stunNormalizedTimer = 0f;
+                stunnedIndefinitely = 0;
+                return;
+            }
+
             bool isZapGun = setStunnedByPlayer != null && setStunnedByPlayer.currentlyHeldObjectServer is PatcherTool;
             AdaptationCategory category = MahoragaAdaptationSystem.ClassifyStun(isZapGun);
 
@@ -1277,7 +1315,8 @@ namespace MahoragaLC.AI
             }
 
             if (currentBehaviourStateIndex == (int)MahoragaState.Adapting ||
-                currentBehaviourStateIndex == (int)MahoragaState.Attacking)
+                currentBehaviourStateIndex == (int)MahoragaState.Attacking ||
+                IsSummonInvulnerable)
             {
                 return;
             }
@@ -1664,6 +1703,7 @@ namespace MahoragaLC.AI
 
             if (currentBehaviourStateIndex == (int)MahoragaState.Adapting ||
                 currentBehaviourStateIndex == (int)MahoragaState.Attacking ||
+                IsSummonInvulnerable ||
                 stunNormalizedTimer > 0f ||
                 stunnedIndefinitely > 0)
             {
@@ -1716,6 +1756,9 @@ namespace MahoragaLC.AI
                 enemyHP,
                 isEnemyDead,
                 targetParams);
+
+            // Late join / late spawn while the summoning is running: resume at the right moment.
+            SendSummonSyncIfActive(targetParams);
         }
 
         [ClientRpc]

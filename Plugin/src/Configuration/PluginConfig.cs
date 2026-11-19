@@ -6,7 +6,7 @@ using LethalLib.Modules;
 
 namespace MahoragaLC.Config
 {
-    public sealed class MahoragaConfig
+    public sealed partial class MahoragaConfig
     {
         public static MahoragaConfig? Current { get; private set; }
 
@@ -225,6 +225,8 @@ namespace MahoragaLC.Config
                 "UseCustomMusicOverride",
                 false,
                 "If true, loads the first .ogg, .wav, or .mp3 audio file placed in the CustomMusic/ folder beside Fede.MahoragaLC.dll instead of the bundled theme.");
+
+            BindSummonAndHunt(cfg);
 
             ClearOrphanedEntries(cfg);
         }

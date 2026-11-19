@@ -44,6 +44,7 @@ namespace MahoragaLC.Audio
         private bool _isOccluded;
         private float _gongDuckUntil = -999f;
         private bool _deathFastFade;
+        private bool _summonMusicRestarted;
 
         public static void Register(MahoragaAudioController controller)
         {
@@ -350,8 +351,23 @@ namespace MahoragaLC.Audio
             float t = Mathf.InverseLerp(outerRange, innerRange, minDist);
             float proximity = t * t * (3f - 2f * t);
 
+            // The theme starts with the summoning: restart it from the top once per sequence and play it at
+            // encounter intensity (the rumble, gong and roar ride on top of it).
+            bool summoning = closest.IsSummoning;
+            if (summoning && !_summonMusicRestarted)
+            {
+                _summonMusicRestarted = true;
+                _musicSource.Stop();
+                _musicSource.volume = 0f;
+                _musicSource.Play();
+            }
+            else if (!summoning)
+            {
+                _summonMusicRestarted = false;
+            }
+
             bool isChasing = closest.IsChasingOrAttacking;
-            float stateMult = isChasing ? ChaseStateMultiplier : PatrolStateMultiplier;
+            float stateMult = (isChasing || summoning) ? ChaseStateMultiplier : PatrolStateMultiplier;
             if (Time.time < _gongDuckUntil)
             {
                 stateMult = Mathf.Min(stateMult, GongDuckMultiplier);

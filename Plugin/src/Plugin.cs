@@ -30,7 +30,8 @@ namespace MahoragaLC
             "mahoraga_slash",
             "mahoraga_impact",
             "mahoraga_roar",
-            "mahoraga_death"
+            "mahoraga_death",
+            "mahoraga_summon"
         };
 
         internal static new ManualLogSource Logger { get; private set; } = null!;

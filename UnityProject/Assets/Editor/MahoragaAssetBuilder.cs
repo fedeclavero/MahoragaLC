@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using MahoragaLC.AI;
 using MahoragaLC.Audio;
+using MahoragaLC.Effects;
 using Unity.Netcode;
 using UnityEditor;
 using UnityEditor.Animations;
@@ -24,6 +25,7 @@ public static class MahoragaAssetBuilder
     private const string AnimationsDir = RootDir + "/Animations";
     private const string PrefabsDir = RootDir + "/Prefabs";
     private const string DataDir = RootDir + "/Data";
+    private const string EffectsDir = RootDir + "/Effects";
 
     private const string FbxPath = ModelDir + "/Mahoraga.fbx";
     private const string AlbedoPath = ModelDir + "/Mahoraga_Albedo.png";
@@ -40,6 +42,8 @@ public static class MahoragaAssetBuilder
     private const string EnemyTypePath = DataDir + "/MahoragaEnemyType.asset";
     private const string TerminalNodePath = DataDir + "/MahoragaTerminalNode.asset";
     private const string TerminalKeywordPath = DataDir + "/MahoragaTerminalKeyword.asset";
+    private const string ShadowPoolMatPath = MaterialsDir + "/ShadowPool_Mat.mat";
+    private const string ShadowPoolMeshPath = EffectsDir + "/ShadowPool.asset";
     private const string DiageticMixerPath = "Assets/AudioMixerController/Diagetic.mixer";
 
     private const string BundleOutputDir = "AssetBundles/StandaloneWindows64";
@@ -55,6 +59,12 @@ public static class MahoragaAssetBuilder
         "Stun",
         "Death"
     };
+
+    // Optional clip: the animator agent adds the "Summon_Emerge" action to Mahoraga.fbx later. Until then the
+    // Summon_Emerge animator state plays FallbackSummonClip (so the build never breaks).
+    private const string SummonClipName = "Summon_Emerge";
+    private const string FallbackSummonClip = "Adapt_WheelSpin";
+    private static bool _hasRealSummonClip;
 
     private static readonly HashSet<string> LoopingClips = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -73,7 +83,8 @@ public static class MahoragaAssetBuilder
         "mahoraga_slash",
         "mahoraga_impact",
         "mahoraga_roar",
-        "mahoraga_death"
+        "mahoraga_death",
+        "mahoraga_summon"
     };
 
     private const string BestiaryDisplayText =
@@ -139,6 +150,7 @@ third shell did nothing. Leave the scrap. Run.""
             EnsureDirectory(AnimationsDir);
             EnsureDirectory(PrefabsDir);
             EnsureDirectory(DataDir);
+            EnsureDirectory(EffectsDir);
 
             // 0. Verify HDRP shaders up-front (abort loudly if missing)
             Shader hdrpLit = Shader.Find("HDRP/Lit");
@@ -165,12 +177,14 @@ third shell did nothing. Leave the scrap. Run.""
             // 4. Build true HDRP/Lit and HDRP/Unlit materials
             Material mahoragaMat = BuildMahoragaMaterial(hdrpLit);
             Material mapDotMat = BuildMapDotMaterial(hdrpUnlit);
+            Material shadowPoolMat = BuildShadowPoolMaterial(hdrpLit);
+            Mesh shadowPoolMesh = BuildShadowPoolMesh();
 
             // 5. Build AnimatorController
             AnimatorController animatorController = BuildAnimatorController(animClips);
 
             // 6. Build ScriptableObjects & MahoragaPrefab
-            BuildScriptableObjectsAndPrefab(audioClips, mahoragaMat, mapDotMat, animatorController);
+            BuildScriptableObjectsAndPrefab(audioClips, mahoragaMat, mapDotMat, shadowPoolMat, shadowPoolMesh, animatorController);
 
             // 7. Assign exact AssetBundle labels & build Windows x64 LZ4 bundle
             AssignBundleLabels();
@@ -210,7 +224,7 @@ third shell did nothing. Leave the scrap. Run.""
             }
 
             bool isMusic = clipName == "mahoraga_music_main";
-            bool isCompressedLongSfx = clipName == "mahoraga_roar" || clipName == "mahoraga_death";
+            bool isCompressedLongSfx = clipName == "mahoraga_roar" || clipName == "mahoraga_death" || clipName == "mahoraga_summon";
 
             importer.forceToMono = !isMusic;
             importer.loadInBackground = false;
@@ -307,7 +321,7 @@ third shell did nothing. Leave the scrap. Run.""
                 cleanName = cleanName.Substring(pipeIdx + 1);
             }
 
-            if (!RequiredClips.Contains(cleanName))
+            if (!RequiredClips.Contains(cleanName) && cleanName != SummonClipName)
             {
                 Debug.LogWarning($"[MAHORAGA-BUILD] Skipping unexpected clip '{def.name}' (normalized '{cleanName}').");
                 continue;
@@ -356,6 +370,20 @@ third shell did nothing. Leave the scrap. Run.""
             {
                 throw new Exception($"AnimationClip '{req}' loopTime mismatch: expected {expectedLoop}, got {loadedClips[req].isLooping}");
             }
+        }
+
+        _hasRealSummonClip = loadedClips.ContainsKey(SummonClipName);
+        if (_hasRealSummonClip)
+        {
+            if (loadedClips[SummonClipName].isLooping)
+            {
+                throw new Exception($"AnimationClip '{SummonClipName}' must not loop.");
+            }
+            Debug.Log($"[MAHORAGA-BUILD] Optional clip '{SummonClipName}' found in the FBX: length={loadedClips[SummonClipName].length:F3}s.");
+        }
+        else
+        {
+            Debug.LogWarning($"[MAHORAGA-BUILD] Optional clip '{SummonClipName}' is NOT in the FBX; the Summon_Emerge state falls back to '{FallbackSummonClip}'.");
         }
 
         return loadedClips;
@@ -477,6 +505,13 @@ third shell did nothing. Leave the scrap. Run.""
         controller.AddParameter("AttackCleave", AnimatorControllerParameterType.Trigger);
         controller.AddParameter("AttackSlam", AnimatorControllerParameterType.Trigger);
         controller.AddParameter("Adapt", AnimatorControllerParameterType.Trigger);
+        controller.AddParameter("Summon", AnimatorControllerParameterType.Trigger);
+        controller.AddParameter(new AnimatorControllerParameter
+        {
+            name = "SummonSpeed",
+            type = AnimatorControllerParameterType.Float,
+            defaultFloat = 1.0f
+        });
 
         AnimatorStateMachine sm = controller.layers[0].stateMachine;
 
@@ -504,6 +539,12 @@ third shell did nothing. Leave the scrap. Run.""
 
         AnimatorState deathState = sm.AddState("Death", new Vector3(250, -280, 0));
         deathState.motion = clips["Death"];
+
+        // Summon_Emerge: real clip when the FBX has it, otherwise the wheel-spin pose as a stand-in.
+        AnimatorState summonState = sm.AddState("Summon_Emerge", new Vector3(500, -200, 0));
+        summonState.motion = clips.TryGetValue(SummonClipName, out AnimationClip summonClip) ? summonClip : clips[FallbackSummonClip];
+        summonState.speedParameterActive = true;
+        summonState.speedParameter = "SummonSpeed";
 
         // Locomotion transitions (ASSET_CONTRACT.md §4.3)
         // Idle -> Walk: Speed > 0.25 && IsChasing == false (0.15s)
@@ -563,6 +604,15 @@ third shell did nothing. Leave the scrap. Run.""
         var tAdaptToIdle = adaptState.AddTransition(idleState);
         ConfigureExitTimeTransition(tAdaptToIdle, 0.95f, 0.10f);
 
+        // 2b. Any State -> Summon_Emerge: Summon trigger && !IsDead (0.10s; exit 0.95 -> Idle). Speed = SummonSpeed.
+        var tAnyToSummon = sm.AddAnyStateTransition(summonState);
+        ConfigureAnyStateTransition(tAnyToSummon, 0.10f);
+        tAnyToSummon.AddCondition(AnimatorConditionMode.If, 0f, "Summon");
+        tAnyToSummon.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsDead");
+
+        var tSummonToIdle = summonState.AddTransition(idleState);
+        ConfigureExitTimeTransition(tSummonToIdle, 0.95f, 0.10f);
+
         // 3. Any State -> Stun: IsStunned && !IsDead (0.10s; exit to Idle when !IsStunned)
         var tAnyToStun = sm.AddAnyStateTransition(stunState);
         ConfigureAnyStateTransition(tAnyToStun, 0.10f);
@@ -595,7 +645,7 @@ third shell did nothing. Leave the scrap. Run.""
 
         EditorUtility.SetDirty(controller);
         AssetDatabase.SaveAssets();
-        Debug.Log("[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 7 parameters and 8 states.");
+        Debug.Log("[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 9 parameters and 9 states (Summon_Emerge uses " + (_hasRealSummonClip ? SummonClipName : FallbackSummonClip + " as fallback") + ").");
         return controller;
     }
 
@@ -629,6 +679,8 @@ third shell did nothing. Leave the scrap. Run.""
         Dictionary<string, AudioClip> audioClips,
         Material mahoragaMat,
         Material mapDotMat,
+        Material shadowPoolMat,
+        Mesh shadowPoolMesh,
         AnimatorController animatorController)
     {
         // Delete existing assets so rebuilds are 100% deterministic
@@ -753,9 +805,15 @@ third shell did nothing. Leave the scrap. Run.""
             var ai = root.AddComponent<MahoragaAI>();
             var audioCtrl = root.AddComponent<MahoragaAudioController>();
 
-            // ModelContainer -> Mahoraga (from FBX)
+            // SummonOffset (pivot moved ONLY in localPosition by the summoning; never scaled) -> ModelContainer -> Mahoraga (from FBX)
+            GameObject summonOffset = new GameObject("SummonOffset");
+            summonOffset.transform.SetParent(root.transform, false);
+            summonOffset.transform.localPosition = Vector3.zero;
+            summonOffset.transform.localRotation = Quaternion.identity;
+            summonOffset.transform.localScale = Vector3.one;
+
             GameObject modelContainer = new GameObject("ModelContainer");
-            modelContainer.transform.SetParent(root.transform, false);
+            modelContainer.transform.SetParent(summonOffset.transform, false);
             modelContainer.transform.localPosition = Vector3.zero;
             modelContainer.transform.localRotation = Quaternion.identity;
             modelContainer.transform.localScale = Vector3.one;
@@ -822,6 +880,9 @@ third shell did nothing. Leave the scrap. Run.""
             HDAdditionalLightData hdLight = wheelLightGo.AddComponent<HDAdditionalLightData>();
             hdLight.lightUnit = LightUnit.Lumen;
             hdLight.intensity = 0f;
+
+            // SummonEffect: glossy black shadow pool + black droplets (opaque HDRP/Lit, see MahoragaSummonEffect)
+            BuildSummonEffect(root.transform, shadowPoolMat, shadowPoolMesh);
 
             // EyeTransform
             GameObject eyeGo = new GameObject("EyeTransform");
@@ -925,7 +986,9 @@ third shell did nothing. Leave the scrap. Run.""
                 new EnemyBehaviourState { name = "Investigating" },
                 new EnemyBehaviourState { name = "Chasing" },
                 new EnemyBehaviourState { name = "Attacking" },
-                new EnemyBehaviourState { name = "Adapting" }
+                new EnemyBehaviourState { name = "Adapting" },
+                new EnemyBehaviourState { name = "Summoning" },
+                new EnemyBehaviourState { name = "EngagingEnemy" }
             };
 
             // Wire custom MahoragaAI fields
@@ -946,6 +1009,7 @@ third shell did nothing. Leave the scrap. Run.""
             audioCtrl.impactClip = audioClips["mahoraga_impact"];
             audioCtrl.roarClip = audioClips["mahoraga_roar"];
             audioCtrl.deathClip = audioClips["mahoraga_death"];
+            audioCtrl.summonClip = audioClips["mahoraga_summon"];
 
             // Save prefab asset
             GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(root, PrefabPath, out bool saveSuccess);
@@ -985,6 +1049,199 @@ third shell did nothing. Leave the scrap. Run.""
         {
             UnityEngine.Object.DestroyImmediate(root);
         }
+    }
+
+    private static Material BuildShadowPoolMaterial(Shader hdrpLit)
+    {
+        if (AssetDatabase.LoadAssetAtPath<Material>(ShadowPoolMatPath) != null)
+        {
+            AssetDatabase.DeleteAsset(ShadowPoolMatPath);
+        }
+
+        // Opaque, near-black, very glossy HDRP/Lit: reads as wet black ink under the facility lights and uses the
+        // same shader variants as Mahoraga_Mat (no decals, no transparent variants).
+        var mat = new Material(hdrpLit)
+        {
+            name = "ShadowPool_Mat"
+        };
+        mat.SetColor("_BaseColor", new Color(0.012f, 0.012f, 0.016f, 1.0f));
+        mat.SetFloat("_Metallic", 0.0f);
+        mat.SetFloat("_Smoothness", 0.97f);
+        mat.SetFloat("_SurfaceType", 0.0f);
+        mat.SetFloat("_CullMode", 2.0f);
+        mat.SetFloat("_CullModeForward", 2.0f);
+        HDMaterial.ValidateMaterial(mat);
+
+        AssetDatabase.CreateAsset(mat, ShadowPoolMatPath);
+        AssetDatabase.SaveAssets();
+        Material saved = AssetDatabase.LoadAssetAtPath<Material>(ShadowPoolMatPath);
+        if (saved == null || saved.shader == null || saved.shader.name != "HDRP/Lit")
+        {
+            throw new Exception("ShadowPool_Mat did not save cleanly with HDRP/Lit shader!");
+        }
+        return saved;
+    }
+
+    /// <summary>
+    /// Unit-radius irregular disc (organic edge) with a slightly raised glossy lip, ~1-2 cm tall, facing +Y.
+    /// Scaled at runtime by MahoragaSummonEffect.
+    /// </summary>
+    private static Mesh BuildShadowPoolMesh()
+    {
+        const int segments = 72;
+        float[] ringRadius = { 0f, 0.62f, 0.86f, 0.95f, 1.0f };
+        float[] ringHeight = { 0.010f, 0.012f, 0.016f, 0.018f, 0.000f };
+
+        var verts = new List<Vector3>();
+        var uvs = new List<Vector2>();
+        verts.Add(new Vector3(0f, ringHeight[0], 0f));
+        uvs.Add(new Vector2(0.5f, 0.5f));
+
+        for (int ring = 1; ring < ringRadius.Length; ring++)
+        {
+            for (int i = 0; i < segments; i++)
+            {
+                float theta = 2f * Mathf.PI * i / segments;
+                // Organic, closed (periodic) edge irregularity.
+                float irregular = 1f
+                    + 0.10f * Mathf.Sin(3f * theta + 1.3f)
+                    + 0.06f * Mathf.Sin(5f * theta + 0.4f)
+                    + 0.04f * Mathf.Sin(9f * theta + 2.1f)
+                    + 0.03f * Mathf.Sin(13f * theta);
+                float r = ringRadius[ring] * irregular * 0.9f; // 0.9 keeps the maximum extent near 1
+                var v = new Vector3(r * Mathf.Sin(theta), ringHeight[ring], r * Mathf.Cos(theta));
+                verts.Add(v);
+                uvs.Add(new Vector2(v.x * 0.5f + 0.5f, v.z * 0.5f + 0.5f));
+            }
+        }
+
+        var tris = new List<int>();
+        // Center fan (clockwise seen from above => front face up)
+        for (int i = 0; i < segments; i++)
+        {
+            int a = 1 + i;
+            int b = 1 + (i + 1) % segments;
+            tris.Add(0);
+            tris.Add(a);
+            tris.Add(b);
+        }
+
+        // Ring bands
+        for (int ring = 1; ring < ringRadius.Length - 1; ring++)
+        {
+            int inner = 1 + (ring - 1) * segments;
+            int outer = 1 + ring * segments;
+            for (int i = 0; i < segments; i++)
+            {
+                int i1 = (i + 1) % segments;
+                tris.Add(inner + i);
+                tris.Add(outer + i);
+                tris.Add(outer + i1);
+
+                tris.Add(inner + i);
+                tris.Add(outer + i1);
+                tris.Add(inner + i1);
+            }
+        }
+
+        var mesh = new Mesh { name = "ShadowPool" };
+        mesh.SetVertices(verts);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateNormals();
+        mesh.RecalculateTangents();
+        mesh.RecalculateBounds();
+
+        if (AssetDatabase.LoadAssetAtPath<Mesh>(ShadowPoolMeshPath) != null)
+        {
+            AssetDatabase.DeleteAsset(ShadowPoolMeshPath);
+        }
+        AssetDatabase.CreateAsset(mesh, ShadowPoolMeshPath);
+        AssetDatabase.SaveAssets();
+        Mesh saved = AssetDatabase.LoadAssetAtPath<Mesh>(ShadowPoolMeshPath);
+        if (saved == null)
+        {
+            throw new Exception("ShadowPool mesh did not save.");
+        }
+
+        Vector3[] normals = saved.normals;
+        float avgUp = 0f;
+        for (int i = 0; i < normals.Length; i++)
+        {
+            avgUp += normals[i].y;
+        }
+        avgUp /= Mathf.Max(1, normals.Length);
+        Assert(avgUp > 0.8f, $"ShadowPool mesh faces downward (average normal.y={avgUp:F3}); winding is inverted!");
+        Debug.Log($"[MAHORAGA-BUILD] Built ShadowPool mesh: {saved.vertexCount} verts, {saved.triangles.Length / 3} tris, avg normal.y={avgUp:F3}, bounds={saved.bounds.size:F3}.");
+        return saved;
+    }
+
+    private static void BuildSummonEffect(Transform root, Material shadowPoolMat, Mesh shadowPoolMesh)
+    {
+        GameObject effectGo = new GameObject("SummonEffect");
+        effectGo.transform.SetParent(root, false);
+        effectGo.transform.localPosition = Vector3.zero;
+        effectGo.transform.localRotation = Quaternion.identity;
+
+        // Pool
+        GameObject poolGo = new GameObject("ShadowPool");
+        poolGo.transform.SetParent(effectGo.transform, false);
+        poolGo.transform.localScale = new Vector3(0.001f, 1f, 0.001f);
+        var poolFilter = poolGo.AddComponent<MeshFilter>();
+        poolFilter.sharedMesh = shadowPoolMesh;
+        var poolRenderer = poolGo.AddComponent<MeshRenderer>();
+        poolRenderer.sharedMaterial = shadowPoolMat;
+        poolRenderer.shadowCastingMode = ShadowCastingMode.Off;
+        poolRenderer.receiveShadows = true;
+        poolRenderer.enabled = false;
+
+        // Droplets: black glossy mesh particles splashing up while he climbs out
+        GameObject dropGo = new GameObject("Droplets");
+        dropGo.transform.SetParent(effectGo.transform, false);
+        dropGo.transform.localPosition = new Vector3(0f, 0.05f, 0f);
+        dropGo.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f); // cone emits along local +Z -> world up
+
+        var ps = dropGo.AddComponent<ParticleSystem>();
+        ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+
+        var main = ps.main;
+        main.loop = true;
+        main.playOnAwake = false;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(0.5f, 0.95f);
+        main.startSpeed = new ParticleSystem.MinMaxCurve(1.6f, 4.8f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.035f, 0.12f);
+        main.startColor = new Color(0.01f, 0.01f, 0.014f, 1f);
+        main.gravityModifier = 1.7f;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.maxParticles = 160;
+
+        var emission = ps.emission;
+        emission.enabled = true;
+        emission.rateOverTime = 0f;
+
+        var shape = ps.shape;
+        shape.enabled = true;
+        shape.shapeType = ParticleSystemShapeType.Cone;
+        shape.angle = 24f;
+        shape.radius = 0.75f;
+        shape.radiusThickness = 1f;
+
+        var sizeOverLifetime = ps.sizeOverLifetime;
+        sizeOverLifetime.enabled = true;
+        sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, new AnimationCurve(
+            new Keyframe(0f, 1f), new Keyframe(0.7f, 0.9f), new Keyframe(1f, 0f)));
+
+        var psr = dropGo.GetComponent<ParticleSystemRenderer>();
+        psr.renderMode = ParticleSystemRenderMode.Mesh;
+        psr.mesh = Resources.GetBuiltinResource<Mesh>("Sphere.fbx");
+        psr.sharedMaterial = shadowPoolMat;
+        psr.shadowCastingMode = ShadowCastingMode.Off;
+        psr.receiveShadows = false;
+
+        var effect = effectGo.AddComponent<MahoragaSummonEffect>();
+        effect.poolTransform = poolGo.transform;
+        effect.poolRenderer = poolRenderer;
+        effect.droplets = ps;
     }
 
     private static AudioSource Configure3DAudioSource(GameObject go, float minDist, float maxDist, AudioMixerGroup mixerGroup)
@@ -1056,7 +1313,9 @@ third shell did nothing. Leave the scrap. Run.""
             TerminalNodePath,
             TerminalKeywordPath,
             AnimatorPath,
-            MahoragaMatPath
+            MahoragaMatPath,
+            ShadowPoolMatPath,
+            ShadowPoolMeshPath
         };
         foreach (string clipName in RequiredAudioNames)
         {
@@ -1136,6 +1395,11 @@ third shell did nothing. Leave the scrap. Run.""
             TerminalKeyword terminalKeyword = RequireAsset<TerminalKeyword>(bundle, "MahoragaTerminalKeyword");
             RuntimeAnimatorController animCtrl = RequireAsset<RuntimeAnimatorController>(bundle, "MahoragaAnimator");
             Material mahoragaMat = RequireAsset<Material>(bundle, "Mahoraga_Mat");
+            Material shadowPoolMaterial = RequireAsset<Material>(bundle, "ShadowPool_Mat");
+            Mesh shadowPoolMeshAsset = RequireAsset<Mesh>(bundle, "ShadowPool");
+            Assert(shadowPoolMaterial.shader != null && shadowPoolMaterial.shader.name == "HDRP/Lit",
+                $"ShadowPool_Mat shader mismatch: '{shadowPoolMaterial.shader?.name}'");
+            Assert(shadowPoolMeshAsset.vertexCount > 100, "ShadowPool mesh is empty");
             foreach (string clipName in RequiredAudioNames)
             {
                 AudioClip clip = RequireAsset<AudioClip>(bundle, clipName);
@@ -1169,7 +1433,27 @@ third shell did nothing. Leave the scrap. Run.""
             Assert(mahoragaMat.GetTexture("_EmissiveColorMap") != null, "Mahoraga_Mat missing _EmissiveColorMap");
 
             // 4. Verify AnimatorController clips
-            Assert(animCtrl.animationClips.Length == 8, $"AnimatorController has {animCtrl.animationClips.Length} clips (expected 8)");
+            int expectedClipCount = RequiredClips.Length + (_hasRealSummonClip ? 1 : 0);
+            int distinctClipCount = animCtrl.animationClips.Where(c => c != null).Select(c => c.name).Distinct().Count();
+            Assert(distinctClipCount == expectedClipCount,
+                $"AnimatorController has {distinctClipCount} distinct clips (expected {expectedClipCount}; Summon_Emerge real clip present: {_hasRealSummonClip})");
+            if (_hasRealSummonClip)
+            {
+                Assert(animCtrl.animationClips.Any(c => c != null && c.name == SummonClipName), $"AnimatorController missing clip '{SummonClipName}'");
+            }
+
+            // Parameters/states are editor-only data: inspect the source controller the bundle was built from.
+            var animControllerEditor = AssetDatabase.LoadAssetAtPath<AnimatorController>(AnimatorPath);
+            Assert(animControllerEditor != null, "MahoragaAnimator source controller not found");
+            Assert(animControllerEditor.parameters.Any(pr => pr.name == "Summon" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Summon'");
+            Assert(animControllerEditor.parameters.Any(pr => pr.name == "SummonSpeed" && pr.type == AnimatorControllerParameterType.Float), "Animator missing float 'SummonSpeed'");
+            AnimatorState summonAnimState = animControllerEditor.layers[0].stateMachine.states
+                .Select(cs => cs.state).FirstOrDefault(st => st.name == "Summon_Emerge");
+            Assert(summonAnimState != null && summonAnimState.motion != null, "Animator state 'Summon_Emerge' missing or has no motion");
+            Assert(summonAnimState.motion.name == (_hasRealSummonClip ? SummonClipName : FallbackSummonClip),
+                $"Summon_Emerge motion is '{summonAnimState.motion.name}', expected '{(_hasRealSummonClip ? SummonClipName : FallbackSummonClip)}'");
+            Assert(animControllerEditor.layers[0].stateMachine.anyStateTransitions.Any(tr => tr.destinationState == summonAnimState),
+                "No Any State -> Summon_Emerge transition");
             foreach (string reqClip in RequiredClips)
             {
                 Assert(animCtrl.animationClips.Any(c => c != null && c.name == reqClip), $"AnimatorController missing clip '{reqClip}'");
@@ -1219,8 +1503,33 @@ third shell did nothing. Leave the scrap. Run.""
                 Assert(ai.agent != null, "MahoragaAI.agent is null");
                 Assert(ai.eye != null, "MahoragaAI.eye is null");
                 Assert(ai.thisNetworkObject != null, "MahoragaAI.thisNetworkObject is null");
-                Assert(ai.enemyBehaviourStates != null && ai.enemyBehaviourStates.Length == 5,
-                    $"MahoragaAI.enemyBehaviourStates.Length={ai.enemyBehaviourStates?.Length}, expected 5");
+                Assert(ai.enemyBehaviourStates != null && ai.enemyBehaviourStates.Length == 7,
+                    $"MahoragaAI.enemyBehaviourStates.Length={ai.enemyBehaviourStates?.Length}, expected 7");
+                string[] expectedStateNames = { "Patrolling", "Investigating", "Chasing", "Attacking", "Adapting", "Summoning", "EngagingEnemy" };
+                for (int si = 0; si < expectedStateNames.Length; si++)
+                {
+                    Assert(ai.enemyBehaviourStates[si] != null && ai.enemyBehaviourStates[si].name == expectedStateNames[si],
+                        $"enemyBehaviourStates[{si}] is '{ai.enemyBehaviourStates[si]?.name}', expected '{expectedStateNames[si]}'");
+                }
+
+                // Summoning hierarchy: root / SummonOffset / ModelContainer / Mahoraga, plus the SummonEffect pool.
+                Transform offsetTr = inst.transform.Find("SummonOffset");
+                Assert(offsetTr != null, "Missing SummonOffset pivot");
+                Assert(offsetTr.localPosition == Vector3.zero && offsetTr.localScale == Vector3.one, "SummonOffset must start at zero offset and unit scale");
+                Assert(offsetTr.Find("ModelContainer") != null, "ModelContainer must be a child of SummonOffset");
+                Assert(offsetTr.Find("ModelContainer/Mahoraga") != null, "Mahoraga model must live under SummonOffset/ModelContainer");
+
+                MahoragaSummonEffect summonFx = inst.GetComponentInChildren<MahoragaSummonEffect>(true);
+                Assert(summonFx != null && summonFx.poolTransform != null && summonFx.poolRenderer != null && summonFx.droplets != null,
+                    "MahoragaSummonEffect missing or references unwired");
+                Assert(summonFx.poolRenderer.sharedMaterial != null && summonFx.poolRenderer.sharedMaterial.shader.name == "HDRP/Lit",
+                    "ShadowPool renderer must use an HDRP/Lit material");
+                Assert(summonFx.poolRenderer.GetComponent<MeshFilter>().sharedMesh != null, "ShadowPool MeshFilter has no mesh");
+                var fxRenderer = summonFx.droplets.GetComponent<ParticleSystemRenderer>();
+                Assert(fxRenderer.renderMode == ParticleSystemRenderMode.Mesh && fxRenderer.mesh != null && fxRenderer.sharedMaterial != null,
+                    "Droplets particle renderer must be Mesh mode with a mesh and material");
+                Assert(summonFx.droplets.emission.rateOverTime.constant == 0f, "Droplets must not emit until the summoning drives them");
+
                 Assert(ai.wheelBone != null, "MahoragaAI.wheelBone is null");
                 Assert(ai.swordBone != null, "MahoragaAI.swordBone is null");
                 Assert(ai.wheelGlowLight != null, "MahoragaAI.wheelGlowLight is null");
@@ -1241,6 +1550,8 @@ third shell did nothing. Leave the scrap. Run.""
                        audioCtrl.slashClip != null && audioCtrl.impactClip != null &&
                        audioCtrl.roarClip != null && audioCtrl.deathClip != null,
                     "One or more AudioClips null on MahoragaAudioController");
+                Assert(audioCtrl.summonClip != null && audioCtrl.summonClip.name == "mahoraga_summon" && audioCtrl.summonClip.length > 4.5f,
+                    "MahoragaAudioController.summonClip missing or too short");
 
                 // CollisionCollider checks
                 Transform colTr = inst.transform.Find("CollisionCollider");
@@ -1314,7 +1625,7 @@ third shell did nothing. Leave the scrap. Run.""
 
                 Debug.Log($"[MAHORAGA-VERIFY] SkinnedMeshRenderer.bounds: min={smrBounds.min:F4}, max={smrBounds.max:F4}, size={smrBounds.size:F4}");
                 Debug.Log($"[MAHORAGA-VERIFY] Exact Baked World Y: feetMinY={minY:F4}u, skullCrownBodyMaxY={bodyMaxY:F4}u, dharmaWheelTopMaxY={wheelMaxY:F4}u, totalMaxY={totalMaxY:F4}u");
-                Debug.Log($"[MAHORAGA-VERIFY] MissingScripts=0, Shaders=HDRP/Lit (body) + HDRP/Unlit (MapDot), NetworkObjectHash={netHash}, Assets=14/14 PASS.");
+                Debug.Log($"[MAHORAGA-VERIFY] MissingScripts=0, Shaders=HDRP/Lit (body) + HDRP/Unlit (MapDot), NetworkObjectHash={netHash}, Assets=14/14 + summon (clip, ShadowPool mesh+material) PASS, Summon_Emerge real clip={_hasRealSummonClip}.");
 
                 Assert(Mathf.Abs(minY) <= 0.02f, $"Feet minY={minY:F4}u deviates from 0.00u!");
                 Assert(bodyMaxY >= 3.675f && bodyMaxY <= 3.825f, $"Standing skull crown height={bodyMaxY:F4}u outside 3.75u ±2% [3.675, 3.825]!");

@@ -20,6 +20,11 @@ internal static class Program
         Run("ZapGun continuous-beam debounce (3.0s) & fresh engagement gap (1.5s)", TestZapGunDebounce);
         Run("StunGrenade adaptation negates subsequent flashes", TestStunGrenadeAdaptation);
         Run("MoonRarityParser parses vanilla, modded, whitespace, and malformed entries", TestMoonRarityParser);
+        Run("Summon timeline: rise, pool, wheel, droplets, finish", SummonAndHuntTests.TestTimelineReference);
+        Run("Summon timeline: scales with duration and clamps bad values", SummonAndHuntTests.TestTimelineScalingAndClamp);
+        Run("Hunt: inside/outside classification with hysteresis (game thresholds)", SummonAndHuntTests.TestDomainHysteresis);
+        Run("Hunt: candidate ordering skips blocked players", SummonAndHuntTests.TestCandidateOrdering);
+        Run("Hunt: stuck detection", SummonAndHuntTests.TestStuckDetection);
 
         Console.WriteLine($"Tests completed: {_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;

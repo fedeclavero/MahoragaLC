@@ -97,3 +97,21 @@ For `unity-builder` importing into `UnityProject/Assets/Mahoraga/Audio/` (tagged
 - **`mahoraga_music_main.ogg`**: `Force To Mono = false` (preserve Stereo), `Load Type = Streaming` (or `CompressedInMemory`), `Compression Format = Vorbis`, `Quality = 0.7` (or keep native Vorbis q6 quality). Played on dedicated 2D music `AudioSource` (`loop = true`, `spatialBlend = 0.0`) driven by `MahoragaAudioController` distance curve + `AudioLowPassFilter`.
 - **All 7 SFX clips** (`mahoraga_wheel_turn`, `mahoraga_footstep_1`, `mahoraga_footstep_2`, `mahoraga_slash`, `mahoraga_impact`, `mahoraga_roar`, `mahoraga_death`): Already native **Mono (44.1 kHz)** for pinpoint 3D Unity spatialization (`spatialBlend = 1.0`). Set `Force To Mono = true`, `Load Type = DecompressOnLoad` (for footsteps/slash/impact) or `CompressedInMemory` (for wheel/roar/death), `Compression Format = Vorbis`.
 - **DO NOT** copy or import `assets/audio/source/` (`raw_source.wav`, `raw_source.info.json`) into the Unity project.
+
+---
+
+## 5. Added clip: `mahoraga_summon` (summoning sequence)
+
+| Exact Clip Name | File | Duration | SR / Ch | Codec | Size | Integrated LUFS | True Peak | Clipped |
+|---|---|---:|---|---|---:|---:|---:|---:|
+| `mahoraga_summon` | `mahoraga_summon.ogg` | **5.000 s** | 44.1 kHz / Mono | Vorbis q6 | 40,822 B | **-16.2 LUFS** | **-2.6 dBTP** | 0 |
+
+- **Original synthesis** (numpy/scipy, no third-party audio): `assets/audio/tools/synth_summon.py <out.wav>`, encoded with
+  `ffmpeg -i out.wav -ac 1 -ar 44100 -c:a libvorbis -q:a 6 mahoraga_summon.ogg`.
+- **Design (timeline of the 4.8 s sequence, clip is 5.0 s so the tail rings out):** rising sub drone (38/57/76 Hz, pitch +28 %) and
+  viscous black-liquid churn with bubble pops (0-2.6 s) -> wet drag while the body climbs out (0.9-2.6 s) -> deep emergence boom at
+  **2.60 s** (sub sweep 58->28 Hz + low thud) -> falling airy hiss, sparse drips and dark reverb as the shadow dissolves (3.7-5.0 s).
+- **Runtime alignment:** the boom is at 2.6 s inside the clip; `MahoragaAI.Summon` starts it later (longer durations) or seeks into it
+  (shorter durations) so the boom always lands on the end of the emergence for any `SummonDuration`.
+- **Unity import:** `ForceToMono = true`, `CompressedInMemory`, Vorbis q0.7 (same as roar/death). Bundled in `mahoraga_assets`, played by
+  `MahoragaAudioController.PlaySummonRumble` on a runtime clone of the voice source (same Diagetic mixer group and 3D curve).
