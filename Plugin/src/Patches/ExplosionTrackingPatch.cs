@@ -20,6 +20,18 @@ namespace MahoragaLC.Patches
         private static readonly TimedEvent[] FlashRing = new TimedEvent[BufferCapacity];
         private static int _flashCursor;
 
+        // Old Bird (RadMechAI) missile blasts, tracked separately so Mahoraga can give them their own adaptation category.
+        private struct MissileEvent
+        {
+            public Vector3 Position;
+            public float Time;
+            public float Range;
+            public EnemyAI? Source;
+        }
+
+        private static readonly MissileEvent[] MissileRing = new MissileEvent[BufferCapacity];
+        private static int _missileCursor;
+
         [HarmonyPatch(typeof(Landmine), nameof(Landmine.SpawnExplosion))]
         [HarmonyPrefix]
         private static void OnSpawnExplosion(Vector3 explosionPosition, float damageRange)
@@ -49,6 +61,51 @@ namespace MahoragaLC.Patches
                 Range = 13.0f
             };
             _flashCursor = (_flashCursor + 1) % BufferCapacity;
+        }
+
+        // RadMechAI.SetExplosion runs on the host machine for every missile impact (server path and client-reported path)
+        // right before Landmine.SpawnExplosion, which is what damages enemies via HitEnemyOnLocalClient(6).
+        [HarmonyPatch(typeof(RadMechAI), nameof(RadMechAI.SetExplosion))]
+        [HarmonyPrefix]
+        private static void OnRadMechSetExplosion(RadMechAI __instance, Vector3 explosionPosition, Vector3 forwardRotation)
+        {
+            MissileRing[_missileCursor] = new MissileEvent
+            {
+                Position = explosionPosition - forwardRotation * 0.1f,
+                Time = Time.time,
+                Range = 7f,
+                Source = __instance
+            };
+            _missileCursor = (_missileCursor + 1) % BufferCapacity;
+        }
+
+        /// <summary>True when an Old Bird missile detonated close to <paramref name="worldPos"/> in the last <paramref name="maxAge"/> seconds.</summary>
+        public static bool HasRecentMissileNear(Vector3 worldPos, float now, out EnemyAI? source, float maxAge = 0.25f, float extraMargin = 2.0f)
+        {
+            source = null;
+            for (int i = 0; i < BufferCapacity; i++)
+            {
+                MissileEvent evt = MissileRing[i];
+                if (evt.Range <= 0f)
+                {
+                    continue;
+                }
+
+                float age = now - evt.Time;
+                if (age < 0f || age > maxAge)
+                {
+                    continue;
+                }
+
+                float maxDist = evt.Range + extraMargin;
+                if ((worldPos - evt.Position).sqrMagnitude <= maxDist * maxDist)
+                {
+                    source = evt.Source;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public static bool HasRecentExplosionNear(Vector3 worldPos, float now, float maxAge = 0.25f, float extraMargin = 5.0f)

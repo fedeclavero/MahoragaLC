@@ -29,7 +29,7 @@ namespace MahoragaLC.Audio
         public bool IsAlive => AI != null && !AI.isEnemyDead;
 
         public bool IsChasingOrAttacking =>
-            AI != null && (AI.currentBehaviourStateIndex == 2 || AI.currentBehaviourStateIndex == 3);
+            AI != null && (AI.currentBehaviourStateIndex == 2 || AI.currentBehaviourStateIndex == 3 || AI.currentBehaviourStateIndex == 6);
 
         private float _strideAccum;
         private bool _useSecondFootstep;
@@ -154,6 +154,18 @@ namespace MahoragaLC.Audio
             voiceSource.pitch = 1.0f;
             voiceSource.PlayOneShot(wheelTurnClip, volume);
             WalkieTalkie.TransmitOneShotAudio(voiceSource, wheelTurnClip, volume);
+        }
+
+        /// <summary>Muted, higher-pitched gong for the intermediate (non-freezing) Wheel clicks.</summary>
+        public void PlayWheelClick(float volume = 0.6f)
+        {
+            if (voiceSource == null || wheelTurnClip == null)
+            {
+                return;
+            }
+
+            voiceSource.pitch = Random.Range(1.28f, 1.38f);
+            voiceSource.PlayOneShot(wheelTurnClip, Mathf.Clamp01(volume));
         }
 
         public void PlayDeflectChime()

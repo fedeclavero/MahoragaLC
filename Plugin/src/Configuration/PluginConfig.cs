@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using BepInEx.Configuration;
 using LethalLib.Modules;
+using MahoragaLC.AI;
 
 namespace MahoragaLC.Config
 {
@@ -21,12 +22,54 @@ namespace MahoragaLC.Config
 
         // [Combat]
         public ConfigEntry<int> MaxHP { get; }
-        public ConfigEntry<int> AdaptationThreshold { get; }
-        public ConfigEntry<float> AdaptedDamageResistance { get; }
-        public ConfigEntry<float> AdaptationHealPercent { get; }
         public ConfigEntry<int> CleaveDamage { get; }
         public ConfigEntry<int> SlamDamage { get; }
         public ConfigEntry<bool> CanForceLockedDoors { get; }
+        public ConfigEntry<float> PlayerKnockbackMultiplier { get; }
+        public ConfigEntry<float> RetaliationHalfLifeSeconds { get; }
+        public ConfigEntry<float> RetaliationSwitchLockoutSeconds { get; }
+        public ConfigEntry<float> RegenDelaySeconds { get; }
+        public ConfigEntry<float> RegenPercentPerSecond { get; }
+
+        // [Adaptation]
+        public ConfigEntry<int> HitsPerAdaptationStage { get; }
+        public ConfigEntry<float> Stage1Resistance { get; }
+        public ConfigEntry<float> Stage2Resistance { get; }
+        public ConfigEntry<float> AdaptedDamageResistance { get; }
+        public ConfigEntry<float> AdaptationHealPercent { get; }
+
+        // [EnemyInteraction]
+        public ConfigEntry<bool> VisibleToOtherEnemies { get; }
+        public ConfigEntry<bool> FightEnemies { get; }
+        public ConfigEntry<bool> EngageEnemiesWhenIdle { get; }
+        public ConfigEntry<int> EnemyCleaveDamage { get; }
+        public ConfigEntry<int> EnemySlamDamage { get; }
+        public ConfigEntry<float> EnemyKnockbackMultiplier { get; }
+        public ConfigEntry<float> EnemyGrudgeHalfLifeSeconds { get; }
+        public ConfigEntry<float> EnemyEngageMaxSeconds { get; }
+        public ConfigEntry<float> ImmortalEnemyEngageSeconds { get; }
+        public ConfigEntry<float> DisengageCooldownSeconds { get; }
+
+        // [OldBird]
+        public ConfigEntry<bool> FightOldBirds { get; }
+        public ConfigEntry<string> OldBirdPriorityMode { get; }
+        public ConfigEntry<float> OldBirdPriorityDistance { get; }
+        public ConfigEntry<float> OldBirdSeekRange { get; }
+        public ConfigEntry<float> OldBirdHitsToDestroy { get; }
+        public ConfigEntry<float> OldBirdEngageMaxSeconds { get; }
+        public ConfigEntry<int> OldBirdsRequiredToKill { get; }
+        public ConfigEntry<float> OldBirdKillWindowSeconds { get; }
+        public ConfigEntry<float> OldBirdSoloHpFloorFraction { get; }
+        public ConfigEntry<float> OldBirdMissileFullResistance { get; }
+
+        // [Growth]
+        public ConfigEntry<bool> GrowthEnabled { get; }
+        public ConfigEntry<float> GrowthMaxScale { get; }
+        public ConfigEntry<int> GrowthStepsToMatch { get; }
+        public ConfigEntry<float> GrowthTransitionSeconds { get; }
+
+        /// <summary>Progressive adaptation tuning derived from [Adaptation]; rebuilt whenever one of those entries changes.</summary>
+        public AdaptationSettings Adaptation { get; private set; }
 
         // [Movement]
         public ConfigEntry<float> PatrolSpeed { get; }
@@ -104,30 +147,6 @@ namespace MahoragaLC.Config
                     "Base HP of Mahoraga in Lethal Company hit-force units (Shovel=1, Shotgun=2-5, Landmine=6).",
                     new AcceptableValueRange<int>(6, 100)));
 
-            AdaptationThreshold = cfg.Bind(
-                "Combat",
-                "AdaptationThreshold",
-                2,
-                new ConfigDescription(
-                    "Number of hits or stun exposures from a category required before the Wheel of Adaptation turns.",
-                    new AcceptableValueRange<int>(1, 5)));
-
-            AdaptedDamageResistance = cfg.Bind(
-                "Combat",
-                "AdaptedDamageResistance",
-                0.95f,
-                new ConfigDescription(
-                    "Damage reduction applied to already-adapted weapon categories (0.95 = 95% resistance, 1.00 = full immunity).",
-                    new AcceptableValueRange<float>(0.50f, 1.00f)));
-
-            AdaptationHealPercent = cfg.Bind(
-                "Combat",
-                "AdaptationHealPercent",
-                0.20f,
-                new ConfigDescription(
-                    "Fraction of MaxHP regenerated each time the Wheel of Adaptation completes a turn.",
-                    new AcceptableValueRange<float>(0.00f, 0.50f)));
-
             CleaveDamage = cfg.Bind(
                 "Combat",
                 "CleaveDamage",
@@ -149,6 +168,272 @@ namespace MahoragaLC.Config
                 "CanForceLockedDoors",
                 true,
                 "If true, Mahoraga forces key-locked interior DoorLock doors open after 2.2 seconds of pounding.");
+
+            PlayerKnockbackMultiplier = cfg.Bind(
+                "Combat",
+                "PlayerKnockbackMultiplier",
+                1.0f,
+                new ConfigDescription(
+                    "Scales the shove players receive from Sword Cleave / Divergent Slam (0 disables knockback).",
+                    new AcceptableValueRange<float>(0.0f, 3.0f)));
+
+            RetaliationHalfLifeSeconds = cfg.Bind(
+                "Combat",
+                "RetaliationHalfLifeSeconds",
+                6.0f,
+                new ConfigDescription(
+                    "How long a player who hurts Mahoraga stays its priority target (aggro weight halves every this many seconds).",
+                    new AcceptableValueRange<float>(2.0f, 30.0f)));
+
+            RetaliationSwitchLockoutSeconds = cfg.Bind(
+                "Combat",
+                "RetaliationSwitchLockoutSeconds",
+                2.5f,
+                new ConfigDescription(
+                    "Minimum time between two retaliation target switches (anti-oscillation hysteresis).",
+                    new AcceptableValueRange<float>(0.5f, 10.0f)));
+
+            RegenDelaySeconds = cfg.Bind(
+                "Combat",
+                "RegenDelaySeconds",
+                8.0f,
+                new ConfigDescription(
+                    "Seconds without taking damage before Mahoraga starts regenerating slowly.",
+                    new AcceptableValueRange<float>(1.0f, 60.0f)));
+
+            RegenPercentPerSecond = cfg.Bind(
+                "Combat",
+                "RegenPercentPerSecond",
+                0.01f,
+                new ConfigDescription(
+                    "Out-of-combat regeneration as a fraction of MaxHP per second (0.01 = 1%/s, 0 disables).",
+                    new AcceptableValueRange<float>(0.0f, 0.10f)));
+
+            // [Adaptation]
+            HitsPerAdaptationStage = cfg.Bind(
+                "Adaptation",
+                "HitsPerAdaptationStage",
+                1,
+                new ConfigDescription(
+                    "Exposures of one damage/stun category needed to turn the Wheel one stage. There are 3 stages: the 3rd completes the adaptation (heal + category blocked).",
+                    new AcceptableValueRange<int>(1, 5)));
+
+            Stage1Resistance = cfg.Bind(
+                "Adaptation",
+                "Stage1Resistance",
+                0.40f,
+                new ConfigDescription(
+                    "Resistance to a category after its 1st Wheel turn (0.40 = 40% less damage / stun time). The turn itself is a quick click and does not stop Mahoraga.",
+                    new AcceptableValueRange<float>(0.0f, 0.90f)));
+
+            Stage2Resistance = cfg.Bind(
+                "Adaptation",
+                "Stage2Resistance",
+                0.70f,
+                new ConfigDescription(
+                    "Resistance to a category after its 2nd Wheel turn. Raised to at least Stage1Resistance.",
+                    new AcceptableValueRange<float>(0.0f, 0.95f)));
+
+            AdaptedDamageResistance = cfg.Bind(
+                "Adaptation",
+                "AdaptedDamageResistance",
+                0.95f,
+                new ConfigDescription(
+                    "Resistance once a category is fully adapted (0.95 = 95% resistance, 1.00 = full immunity). Raised to at least Stage2Resistance.",
+                    new AcceptableValueRange<float>(0.50f, 1.00f)));
+
+            AdaptationHealPercent = cfg.Bind(
+                "Adaptation",
+                "AdaptationHealPercent",
+                0.20f,
+                new ConfigDescription(
+                    "Fraction of MaxHP regenerated when a category reaches FULL adaptation (intermediate Wheel turns do not heal).",
+                    new AcceptableValueRange<float>(0.00f, 0.50f)));
+
+            // [OldBird]
+            FightOldBirds = cfg.Bind(
+                "OldBird",
+                "FightOldBirds",
+                true,
+                "If true, Mahoraga hunts living Old Birds (RadMechAI) in its own area (outside/inside) even if they never attacked first, and can destroy them.");
+
+            OldBirdPriorityMode = cfg.Bind(
+                "OldBird",
+                "OldBirdPriorityMode",
+                "WhenClose",
+                new ConfigDescription(
+                    "Who comes first when both an Old Bird and players are around. WhenClose = the Old Bird wins while it is within OldBirdPriorityDistance or attacking; Always = Old Birds first (except players who hurt Mahoraga); PlayersFirst = only when no player is in sight.",
+                    new AcceptableValueList<string>("WhenClose", "Always", "PlayersFirst")));
+
+            OldBirdPriorityDistance = cfg.Bind(
+                "OldBird",
+                "OldBirdPriorityDistance",
+                20.0f,
+                new ConfigDescription(
+                    "Fighting distance (meters) inside which an Old Bird outranks players in WhenClose mode.",
+                    new AcceptableValueRange<float>(5.0f, 80.0f)));
+
+            OldBirdSeekRange = cfg.Bind(
+                "OldBird",
+                "OldBirdSeekRange",
+                70.0f,
+                new ConfigDescription(
+                    "Maximum distance (meters) at which Mahoraga goes looking for an Old Bird.",
+                    new AcceptableValueRange<float>(10.0f, 200.0f)));
+
+            OldBirdHitsToDestroy = cfg.Bind(
+                "OldBird",
+                "OldBirdHitsToDestroy",
+                8.0f,
+                new ConfigDescription(
+                    "Cleave hits needed to destroy an Old Bird at Mahoraga's base size (a Slam counts double). A grown Mahoraga hits proportionally harder, so it needs fewer.",
+                    new AcceptableValueRange<float>(1.0f, 100.0f)));
+
+            OldBirdEngageMaxSeconds = cfg.Bind(
+                "OldBird",
+                "OldBirdEngageMaxSeconds",
+                45.0f,
+                new ConfigDescription(
+                    "Hard cap for one hunt against a single Old Bird before Mahoraga gives up (see DisengageCooldownSeconds).",
+                    new AcceptableValueRange<float>(10.0f, 300.0f)));
+
+            OldBirdsRequiredToKill = cfg.Bind(
+                "OldBird",
+                "OldBirdsRequiredToKill",
+                5,
+                new ConfigDescription(
+                    "Old Birds that must be hitting Mahoraga within OldBirdKillWindowSeconds before their missiles may push it below the HP floor (fewer Old Birds can never kill it).",
+                    new AcceptableValueRange<int>(1, 10)));
+
+            OldBirdKillWindowSeconds = cfg.Bind(
+                "OldBird",
+                "OldBirdKillWindowSeconds",
+                6.0f,
+                new ConfigDescription(
+                    "Sliding window used to count how many different Old Birds are attacking Mahoraga at the same time.",
+                    new AcceptableValueRange<float>(1.0f, 30.0f)));
+
+            OldBirdSoloHpFloorFraction = cfg.Bind(
+                "OldBird",
+                "OldBirdSoloHpFloorFraction",
+                0.30f,
+                new ConfigDescription(
+                    "Fraction of MaxHP that Old Bird missiles cannot take Mahoraga below unless OldBirdsRequiredToKill of them attack together.",
+                    new AcceptableValueRange<float>(0.05f, 0.90f)));
+
+            OldBirdMissileFullResistance = cfg.Bind(
+                "OldBird",
+                "OldBirdMissileFullResistance",
+                0.90f,
+                new ConfigDescription(
+                    "Resistance to Old Bird missiles once that category is fully adapted (kept below 1.0 so a big flock can still wear it down).",
+                    new AcceptableValueRange<float>(0.50f, 1.00f)));
+
+            // [Growth]
+            GrowthEnabled = cfg.Bind(
+                "Growth",
+                "GrowthEnabled",
+                true,
+                "If true, Mahoraga grows (outdoors only) every time an Old Bird hurts it, up to the Old Bird's own height.");
+
+            GrowthMaxScale = cfg.Bind(
+                "Growth",
+                "GrowthMaxScale",
+                2.0f,
+                new ConfigDescription(
+                    "Maximum size multiplier (1.0 = never grows). The real target is the measured Old Bird height, capped by this.",
+                    new AcceptableValueRange<float>(1.0f, 3.0f)));
+
+            GrowthStepsToMatch = cfg.Bind(
+                "Growth",
+                "GrowthStepsToMatch",
+                6,
+                new ConfigDescription(
+                    "Old Bird damage events needed to grow from base size all the way to the Old Bird's height.",
+                    new AcceptableValueRange<int>(1, 20)));
+
+            GrowthTransitionSeconds = cfg.Bind(
+                "Growth",
+                "GrowthTransitionSeconds",
+                2.0f,
+                new ConfigDescription(
+                    "Approximate seconds each growth step takes to animate.",
+                    new AcceptableValueRange<float>(0.2f, 10.0f)));
+
+            // [EnemyInteraction]
+            VisibleToOtherEnemies = cfg.Bind(
+                "EnemyInteraction",
+                "VisibleToOtherEnemies",
+                true,
+                "If true, other enemies that watch for threats (Old Birds, Baboon Hawks, Giant Kiwis...) can detect Mahoraga and react to it. Takes effect for new sightings immediately.");
+
+            FightEnemies = cfg.Bind(
+                "EnemyInteraction",
+                "FightEnemies",
+                true,
+                "If true, Mahoraga retaliates against enemies that hurt it or block its way (players always come first).");
+
+            EngageEnemiesWhenIdle = cfg.Bind(
+                "EnemyInteraction",
+                "EngageEnemiesWhenIdle",
+                false,
+                "If true, Mahoraga also attacks any killable enemy it sees while patrolling with no player around, without waiting to be provoked.");
+
+            EnemyCleaveDamage = cfg.Bind(
+                "EnemyInteraction",
+                "EnemyCleaveDamage",
+                6,
+                new ConfigDescription(
+                    "Hit force dealt to an enemy by Sword Cleave (same units as a Shovel = 1, Shotgun = 2-5, Landmine = 6 against enemy HP).",
+                    new AcceptableValueRange<int>(1, 50)));
+
+            EnemySlamDamage = cfg.Bind(
+                "EnemyInteraction",
+                "EnemySlamDamage",
+                10,
+                new ConfigDescription(
+                    "Hit force dealt to an enemy by the Divergent Slam.",
+                    new AcceptableValueRange<int>(1, 50)));
+
+            EnemyKnockbackMultiplier = cfg.Bind(
+                "EnemyInteraction",
+                "EnemyKnockbackMultiplier",
+                1.0f,
+                new ConfigDescription(
+                    "Scales the shove enemies receive from Mahoraga's attacks (0 disables; giants are always pushed much less).",
+                    new AcceptableValueRange<float>(0.0f, 3.0f)));
+
+            EnemyGrudgeHalfLifeSeconds = cfg.Bind(
+                "EnemyInteraction",
+                "EnemyGrudgeHalfLifeSeconds",
+                5.0f,
+                new ConfigDescription(
+                    "How long an enemy that hurt Mahoraga stays a retaliation target (aggro weight halves every this many seconds).",
+                    new AcceptableValueRange<float>(1.0f, 30.0f)));
+
+            EnemyEngageMaxSeconds = cfg.Bind(
+                "EnemyInteraction",
+                "EnemyEngageMaxSeconds",
+                20.0f,
+                new ConfigDescription(
+                    "Hard cap on a single fight against one enemy; afterwards Mahoraga disengages and ignores that enemy for DisengageCooldownSeconds.",
+                    new AcceptableValueRange<float>(5.0f, 120.0f)));
+
+            ImmortalEnemyEngageSeconds = cfg.Bind(
+                "EnemyInteraction",
+                "ImmortalEnemyEngageSeconds",
+                6.0f,
+                new ConfigDescription(
+                    "Cap for fights against enemies that cannot die (canDie = false): Mahoraga only swats them briefly, never loops forever.",
+                    new AcceptableValueRange<float>(1.0f, 60.0f)));
+
+            DisengageCooldownSeconds = cfg.Bind(
+                "EnemyInteraction",
+                "DisengageCooldownSeconds",
+                30.0f,
+                new ConfigDescription(
+                    "After giving up on an enemy (timeout, unreachable, immortal) it is ignored for this long.",
+                    new AcceptableValueRange<float>(5.0f, 300.0f)));
 
             // [Movement]
             PatrolSpeed = cfg.Bind(
@@ -226,7 +511,26 @@ namespace MahoragaLC.Config
                 false,
                 "If true, loads the first .ogg, .wav, or .mp3 audio file placed in the CustomMusic/ folder beside Fede.MahoragaLC.dll instead of the bundled theme.");
 
+            Adaptation = BuildAdaptationSettings();
+            HitsPerAdaptationStage.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+            Stage1Resistance.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+            Stage2Resistance.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+            AdaptedDamageResistance.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+            AdaptationHealPercent.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+            OldBirdMissileFullResistance.SettingChanged += (_, __) => Adaptation = BuildAdaptationSettings();
+
             ClearOrphanedEntries(cfg);
+        }
+
+        private AdaptationSettings BuildAdaptationSettings()
+        {
+            return AdaptationSettings.CreateProgressive(
+                HitsPerAdaptationStage.Value,
+                Stage1Resistance.Value,
+                Stage2Resistance.Value,
+                AdaptedDamageResistance.Value,
+                AdaptationHealPercent.Value,
+                OldBirdMissileFullResistance.Value);
         }
 
         public static MahoragaConfig Bind(ConfigFile cfg)
