@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <Compile Include="../src/AI/MahoragaAdaptationSystem.cs" Link="MahoragaAdaptationSystem.cs" />
+    <Compile Include="../src/AI/MahoragaCombatLogic.cs" Link="MahoragaCombatLogic.cs" />
     <Compile Include="../src/Configuration/MoonRarityParser.cs" Link="MoonRarityParser.cs" />
     <Compile Include="../src/AI/SummonTimeline.cs" Link="SummonTimeline.cs" />
     <Compile Include="../src/AI/HuntLogic.cs" Link="HuntLogic.cs" />

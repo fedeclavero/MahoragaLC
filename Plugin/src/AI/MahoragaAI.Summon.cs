@@ -38,7 +38,7 @@ namespace MahoragaLC.AI
         private bool _summonGongDone;
         private bool _summonRoarDone;
 
-        private Transform? _modelContainer; // the "SummonOffset" pivot
+        private Transform? _summonOffsetPivot; // the "SummonOffset" pivot (growth scales ModelContainer, a child of it)
         private Vector3 _modelBaseLocalPosition;
         private MahoragaSummonEffect? _summonEffect;
         private bool _summonPreHidden;
@@ -60,7 +60,7 @@ namespace MahoragaLC.AI
         /// </summary>
         private void ResolveSummonPivot()
         {
-            if (_modelContainer != null)
+            if (_summonOffsetPivot != null)
             {
                 return;
             }
@@ -83,7 +83,7 @@ namespace MahoragaLC.AI
                 model.SetParent(pivot, false);
             }
 
-            _modelContainer = pivot;
+            _summonOffsetPivot = pivot;
             _modelBaseLocalPosition = pivot.localPosition;
         }
 
@@ -449,9 +449,9 @@ namespace MahoragaLC.AI
 
         private void ApplyModelOffset(float yOffset)
         {
-            if (_modelContainer != null)
+            if (_summonOffsetPivot != null)
             {
-                _modelContainer.localPosition = _modelBaseLocalPosition + Vector3.up * yOffset;
+                _summonOffsetPivot.localPosition = _modelBaseLocalPosition + Vector3.up * yOffset;
             }
         }
 

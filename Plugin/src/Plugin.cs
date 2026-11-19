@@ -152,7 +152,7 @@ namespace MahoragaLC
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll(typeof(ExplosionTrackingPatch));
 
-            Logger.LogInfo($"{PluginGuid} v{PluginVersion} loaded! Interior rarity={BoundConfig.DefaultInteriorRarity.Value}, Outdoor={BoundConfig.AllowOutdoorSpawn.Value}, MaxHP={BoundConfig.MaxHP.Value}, Threshold={BoundConfig.AdaptationThreshold.Value}.");
+            Logger.LogInfo($"{PluginGuid} v{PluginVersion} loaded! Interior rarity={BoundConfig.DefaultInteriorRarity.Value}, Outdoor={BoundConfig.AllowOutdoorSpawn.Value}, MaxHP={BoundConfig.MaxHP.Value}, HitsPerAdaptationStage={BoundConfig.HitsPerAdaptationStage.Value}.");
         }
 
         private static void CacheBundleAudioClips(AssetBundle bundle)

@@ -30,7 +30,7 @@ namespace MahoragaLC.Audio
         public bool IsAlive => AI != null && !AI.isEnemyDead;
 
         public bool IsChasingOrAttacking =>
-            AI != null && (AI.currentBehaviourStateIndex == 2 || AI.currentBehaviourStateIndex == 3);
+            AI != null && (AI.currentBehaviourStateIndex == 2 || AI.currentBehaviourStateIndex == 3 || AI.currentBehaviourStateIndex == 6);
 
         public bool IsSummoning => AI != null && AI.IsSummoning;
 
@@ -203,6 +203,18 @@ namespace MahoragaLC.Audio
             _summonSource.pitch = 1.0f;
             _summonSource.time = Mathf.Max(0f, startOffsetSeconds);
             _summonSource.Play();
+        }
+
+        /// <summary>Muted, higher-pitched gong for the intermediate (non-freezing) Wheel clicks.</summary>
+        public void PlayWheelClick(float volume = 0.6f)
+        {
+            if (voiceSource == null || wheelTurnClip == null)
+            {
+                return;
+            }
+
+            voiceSource.pitch = Random.Range(1.28f, 1.38f);
+            voiceSource.PlayOneShot(wheelTurnClip, Mathf.Clamp01(volume));
         }
 
         public void PlayDeflectChime()

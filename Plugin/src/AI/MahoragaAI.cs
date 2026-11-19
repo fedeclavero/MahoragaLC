@@ -17,7 +17,7 @@ namespace MahoragaLC.AI
         Attacking = 3,
         Adapting = 4,
         Summoning = 5,
-        EngagingEnemy = 6 // reserved: retaliation against other enemies (combat front)
+        EngagingEnemy = 6 // fights other enemies (MahoragaAI.Combat.cs)
     }
 
     /// <summary>
@@ -78,6 +78,8 @@ namespace MahoragaLC.AI
         private float _wheelSpinTargetAngle;
         private float _wheelSpinElapsed = 999f;
         private bool _wheelSpinActive;
+        private float _wheelSpinDelay = WheelSpinDelay;
+        private float _wheelSpinDuration = WheelSpinDuration;
 
         private float _emissivePeakIntensity;
         private float _emissiveFlashTimer;
@@ -122,6 +124,8 @@ namespace MahoragaLC.AI
             CacheWheelRestRotation();
             _propBlock = new MaterialPropertyBlock();
             InitSummonVisuals();
+            InstallThreatProxy();
+            ResolveScaleRefs();
         }
 
         public override void Start()
@@ -273,6 +277,13 @@ namespace MahoragaLC.AI
 
             UpdateClientPresentation(dt);
             UpdateSummon(dt);
+            TickScale(dt);
+
+            if (IsServer && isEnemyDead)
+            {
+                // An Old Bird whose destruction already started must still be despawned if Mahoraga dies meanwhile.
+                TickPendingOldBirdDestructions(Time.time);
+            }
 
             if (!IsServer || isEnemyDead)
             {
@@ -325,7 +336,8 @@ namespace MahoragaLC.AI
 
             bool isChasing = !isEnemyDead &&
                 (currentBehaviourStateIndex == (int)MahoragaState.Chasing ||
-                 currentBehaviourStateIndex == (int)MahoragaState.Attacking);
+                 currentBehaviourStateIndex == (int)MahoragaState.Attacking ||
+                 currentBehaviourStateIndex == (int)MahoragaState.EngagingEnemy);
 
             if (creatureAnimator != null)
             {
@@ -359,13 +371,13 @@ namespace MahoragaLC.AI
             }
 
             _wheelSpinElapsed += dt;
-            float spinTime = _wheelSpinElapsed - WheelSpinDelay;
+            float spinTime = _wheelSpinElapsed - _wheelSpinDelay;
             if (spinTime <= 0f)
             {
                 return;
             }
 
-            float u = Mathf.Clamp01(spinTime / WheelSpinDuration);
+            float u = Mathf.Clamp01(spinTime / _wheelSpinDuration);
             // Smooth mechanical cubic ease-out for heavy Dharma wheel click.
             float eased = 1f - Mathf.Pow(1f - u, 3f);
             _wheelDisplayAngle = Mathf.Lerp(_wheelSpinStartAngle, _wheelSpinTargetAngle, eased);
@@ -385,7 +397,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            float baseIdleGlow = 0.4f + _adaptation.WheelStepCount * 0.35f;
+            float baseIdleGlow = 0.4f + Mathf.Min(_adaptation.WheelStepCount, 12) * 0.14f;
 
             if (_emissiveDelayTimer > 0f)
             {
@@ -430,6 +442,8 @@ namespace MahoragaLC.AI
 
         private void TickServerTimersAndActiveStates(float dt)
         {
+            TickCombatServer(dt);
+
             if (_roarCooldownTimer > 0f)
             {
                 _roarCooldownTimer -= dt;
@@ -450,16 +464,19 @@ namespace MahoragaLC.AI
             {
                 MahoragaConfig? cfg = MahoragaConfig.Current;
                 int maxHp = cfg != null ? cfg.MaxHP.Value : 18;
-                int threshold = cfg != null ? cfg.AdaptationThreshold.Value : 2;
-                float healPct = cfg != null ? cfg.AdaptationHealPercent.Value : 0.20f;
+                AdaptationSettings settings = cfg != null ? cfg.Adaptation : _fallbackAdaptation;
 
                 StunEvaluation beamEval = _adaptation.EvaluateSustainedZapBeam(
                     enemyHP,
                     maxHp,
                     isCurrentlyAdapting: false,
-                    threshold,
-                    healPct,
+                    settings,
                     Time.time);
+
+                if (beamEval.TriggeredWheelClick)
+                {
+                    TriggerWheelClickClientRpc((byte)beamEval.Category, (byte)beamEval.StageAfter, _adaptation.AdaptedMask, _adaptation.WheelStepCount, enemyHP);
+                }
 
                 if (beamEval.TriggeredAdaptation)
                 {
@@ -556,10 +573,35 @@ namespace MahoragaLC.AI
 
             MahoragaConfig? cfg = MahoragaConfig.Current;
 
+            if (currentBehaviourStateIndex == (int)MahoragaState.Patrolling ||
+                currentBehaviourStateIndex == (int)MahoragaState.Investigating ||
+                currentBehaviourStateIndex == (int)MahoragaState.Chasing)
+            {
+                // Whoever hurt us is always first (players), then enemy fights (see MahoragaAI.Combat.cs).
+                if (currentBehaviourStateIndex != (int)MahoragaState.Chasing)
+                {
+                    PlayerControllerB? avenger = GetRetaliationPlayer();
+                    if (avenger != null)
+                    {
+                        EnterChaseStateServer(avenger);
+                        return;
+                    }
+                }
+
+                if (EvaluateEnemyEngagementServer(cfg))
+                {
+                    return;
+                }
+            }
+
             switch ((MahoragaState)currentBehaviourStateIndex)
             {
                 case MahoragaState.Patrolling:
                     RunPatrolInterval(cfg);
+                    break;
+
+                case MahoragaState.EngagingEnemy:
+                    RunEngageEnemyInterval(cfg);
                     break;
 
                 case MahoragaState.Investigating:
@@ -661,9 +703,13 @@ namespace MahoragaLC.AI
                 }
             }
 
-            // Target switching: pivot if another visible player is strictly < 65% of current target distance.
+            // Retaliation: the player who is hurting us the most wins (with hysteresis, see AggroTable).
+            TryRetaliationRetargetServer(cfg);
+
+            // Target switching: pivot if another visible player is strictly < 65% of current target distance
+            // (never away from a player who is actively attacking us).
             float currentDist = Vector3.Distance(transform.position, targetPlayer!.transform.position);
-            PlayerControllerB? closerCandidate = FindCloserVisiblePlayer(targetPlayer, currentDist * 0.65f);
+            PlayerControllerB? closerCandidate = CurrentTargetIsAggressor() ? null : FindCloserVisiblePlayer(targetPlayer, currentDist * 0.65f);
             if (closerCandidate != null)
             {
                 SetChaseTargetServer(closerCandidate);
@@ -700,10 +746,11 @@ namespace MahoragaLC.AI
                 float horizDist = new Vector2(toTarget.x, toTarget.z).magnitude;
                 float vertDelta = Mathf.Abs(toTarget.y);
 
-                bool inStandardRange = horizDist <= AttackEntryRange && vertDelta <= VerticalHitTolerance;
+                float sc = ScaleFactor;
+                bool inStandardRange = horizDist <= AttackEntryRange * sc && vertDelta <= VerticalHitTolerance * sc;
                 bool inRailingPunishRange = !inStandardRange
-                    && horizDist <= SlamReach - 0.15f
-                    && vertDelta <= VerticalHitTolerance
+                    && horizDist <= (SlamReach - 0.15f) * sc
+                    && vertDelta <= VerticalHitTolerance * sc
                     && agent != null
                     && agent.enabled
                     && agent.isOnNavMesh
@@ -813,16 +860,17 @@ namespace MahoragaLC.AI
             SetMovingTowardsTargetPlayer(player);
         }
 
-        private void EnterAttackStateServer(bool isSlam)
+        private void EnterAttackStateServer(bool isSlam, EnemyAI? enemyTarget = null)
         {
             StopSearch(currentSearch);
+            _attackEnemyTarget = enemyTarget;
             _currentAttackIsSlam = isSlam;
             _attackElapsed = 0f;
             _attackHitResolved = false;
             _attackSlashPlayed = false;
             _attacksSinceLastSlam = isSlam ? 0 : (_attacksSinceLastSlam + 1);
 
-            int targetId = targetPlayer != null ? (int)targetPlayer.playerClientId : -1;
+            int targetId = enemyTarget == null && targetPlayer != null ? (int)targetPlayer.playerClientId : -1;
             SwitchBehaviourAndSyncServer(MahoragaState.Attacking, targetId);
             TriggerAttackClientRpc(isSlam, isDoorBash: false);
         }
@@ -840,9 +888,16 @@ namespace MahoragaLC.AI
             }
 
             // Track target smoothly during windup.
-            if (_attackElapsed < windup && targetPlayer != null && PlayerIsTargetable(targetPlayer))
+            if (_attackElapsed < windup)
             {
-                FacePositionSmooth(targetPlayer.transform.position, 9f, dt);
+                if (_attackEnemyTarget != null && !_attackEnemyTarget.isEnemyDead)
+                {
+                    FacePositionSmooth(_attackEnemyTarget.transform.position, 9f, dt);
+                }
+                else if (targetPlayer != null && PlayerIsTargetable(targetPlayer))
+                {
+                    FacePositionSmooth(targetPlayer.transform.position, 9f, dt);
+                }
             }
 
             // Cleave slash audio at t = 0.20s.
@@ -860,9 +915,16 @@ namespace MahoragaLC.AI
             if (_attackElapsed >= duration)
             {
                 _attackCooldownTimer = PostAttackCooldown;
-                if (targetPlayer != null && PlayerIsTargetable(targetPlayer))
+                if (_attackEnemyTarget != null && TryReturnToEnemyEngagementAfterAttack())
                 {
-                    EnterChaseStateServer(targetPlayer);
+                    return;
+                }
+
+                _attackEnemyTarget = null;
+                PlayerControllerB? followUp = ChoosePlayerAfterAction(targetPlayer);
+                if (followUp != null)
+                {
+                    EnterChaseStateServer(followUp);
                 }
                 else
                 {
@@ -891,11 +953,14 @@ namespace MahoragaLC.AI
                 ? (cfg != null ? cfg.SlamDamage.Value : 65)
                 : (cfg != null ? cfg.CleaveDamage.Value : 55);
             CauseOfDeath cause = isSlam ? CauseOfDeath.Crushing : CauseOfDeath.Mauling;
-            float reach = isSlam ? SlamReach : CleaveReach;
+            float scale = ScaleFactor;
+            float reach = (isSlam ? SlamReach : CleaveReach) * scale;
+            float vertTolerance = VerticalHitTolerance * scale;
+            float knockMult = (cfg != null ? cfg.PlayerKnockbackMultiplier.Value : 1f) * Mathf.Sqrt(scale);
 
             bool anyHit = false;
-            Vector3 impactOrigin = transform.position + transform.forward * (isSlam ? 0.6f : 1.4f) + Vector3.up * 1.4f;
-            Vector3 rayOrigin = transform.position + Vector3.up * 1.8f;
+            Vector3 impactOrigin = transform.position + transform.forward * (isSlam ? 0.6f : 1.4f) * scale + Vector3.up * 1.4f * scale;
+            Vector3 rayOrigin = transform.position + Vector3.up * 1.8f * scale;
 
             PlayerControllerB[] players = StartOfRound.Instance.allPlayerScripts;
             for (int i = 0; i < players.Length; i++)
@@ -908,7 +973,7 @@ namespace MahoragaLC.AI
 
                 Vector3 toPlayer = p.transform.position - transform.position;
                 float vertDelta = Mathf.Abs(toPlayer.y);
-                if (vertDelta > VerticalHitTolerance)
+                if (vertDelta > vertTolerance)
                 {
                     continue;
                 }
@@ -929,17 +994,23 @@ namespace MahoragaLC.AI
                     }
                 }
 
-                // Wall LOS check so attacks never clip through solid facility walls.
-                Vector3 playerChest = p.transform.position + Vector3.up * 1.3f;
-                if (Physics.Linecast(rayOrigin, playerChest, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
+                // Wall LOS check so attacks never clip through solid facility walls (chest, head or feet must be exposed).
+                if (!HasClearStrikePathToPlayer(rayOrigin, p))
                 {
                     continue;
                 }
 
                 Vector3 knockDir = horizDist > 0.05f ? flatToPlayer.normalized : transform.forward;
-                Vector3 knockback = knockDir * (isSlam ? 16f : 10f) + Vector3.up * (isSlam ? 5f : 2.5f);
+                // Applied by the victim's client through externalForceAutoFade (decays at 2/s: distance ~ speed / 2).
+                Vector3 knockback = (knockDir * (isSlam ? 14f : 9f) + Vector3.up * (isSlam ? 3f : 1.5f)) * knockMult;
 
                 ApplyPlayerDamageClientRpc((int)p.playerClientId, damage, (int)cause, knockback);
+                anyHit = true;
+            }
+
+            // Enemies that are hostile to us (current target, recent aggressors, Old Birds being hunted) take the same swing.
+            if (ResolveEnemyHitsServer(isSlam, reach, rayOrigin, cfg))
+            {
                 anyHit = true;
             }
 
@@ -1069,9 +1140,11 @@ namespace MahoragaLC.AI
 
         private void ResumeAfterAdaptationServer()
         {
-            if (targetPlayer != null && PlayerIsTargetable(targetPlayer))
+            _attackEnemyTarget = null;
+            PlayerControllerB? preferred = ChoosePlayerAfterAction(targetPlayer);
+            if (preferred != null)
             {
-                EnterChaseStateServer(targetPlayer);
+                EnterChaseStateServer(preferred);
                 return;
             }
 
@@ -1125,90 +1198,13 @@ namespace MahoragaLC.AI
             // Suppress base PlayOneShot(hitEnemyVoiceSFX) null warnings; handle impact/deflect SFX cleanly ourselves.
             base.HitEnemy(force, playerWhoHit, playHitSFX: false, hitID);
 
-            if (isEnemyDead)
+            if (isEnemyDead || !IsServer)
             {
                 return;
             }
 
-            if (!IsServer)
-            {
-                return;
-            }
-
-            float now = Time.time;
-            bool heldIsShovelOrKnife = playerWhoHit != null &&
-                (playerWhoHit.currentlyHeldObjectServer is Shovel || playerWhoHit.currentlyHeldObjectServer is KnifeItem);
-            bool heldIsShotgun = playerWhoHit != null && playerWhoHit.currentlyHeldObjectServer is ShotgunItem;
-            bool recentExplosion = (now - _lastHitFromExplosionTime <= 0.15f)
-                || ExplosionTrackingPatch.HasRecentExplosionNear(transform.position, now);
-
-            AdaptationCategory category = MahoragaAdaptationSystem.ClassifyDamage(
-                hitID,
-                force,
-                hasAttacker: playerWhoHit != null,
-                heldIsShovelOrKnife: heldIsShovelOrKnife,
-                heldIsShotgun: heldIsShotgun,
-                recentExplosionNearby: recentExplosion);
-
-            MahoragaConfig? cfg = MahoragaConfig.Current;
-            int maxHp = cfg != null ? cfg.MaxHP.Value : 18;
-            int threshold = cfg != null ? cfg.AdaptationThreshold.Value : 2;
-            float resistance = cfg != null ? cfg.AdaptedDamageResistance.Value : 0.95f;
-            float healPct = cfg != null ? cfg.AdaptationHealPercent.Value : 0.20f;
-            bool isAdapting = currentBehaviourStateIndex == (int)MahoragaState.Adapting;
-
-            DamageEvaluation eval = _adaptation.EvaluateDamage(
-                category,
-                force,
-                enemyHP,
-                maxHp,
-                isAdapting,
-                threshold,
-                resistance,
-                healPct,
-                now);
-
-            enemyHP = eval.FinalHP;
-
-            // Lethal-blow precedence: kill immediately before adaptation can fire!
-            if (eval.IsLethal)
-            {
-                KillEnemyOnOwnerClient();
-                return;
-            }
-
-            // Aggro onto attacker if patrolling or investigating.
-            if (playerWhoHit != null && PlayerIsTargetable(playerWhoHit))
-            {
-                if (currentBehaviourStateIndex == (int)MahoragaState.Patrolling ||
-                    currentBehaviourStateIndex == (int)MahoragaState.Investigating)
-                {
-                    EnterChaseStateServer(playerWhoHit);
-                }
-                else if (targetPlayer == null)
-                {
-                    targetPlayer = playerWhoHit;
-                }
-            }
-
-            if (eval.TriggeredAdaptation)
-            {
-                EnterAdaptationStateServer(category, eval.FinalHP);
-                return;
-            }
-
-            if (eval.WasAlreadyAdapted)
-            {
-                if (_deflectRpcCooldownTimer <= 0f)
-                {
-                    _deflectRpcCooldownTimer = 0.25f;
-                    PlayDeflectFeedbackClientRpc((byte)category);
-                }
-            }
-            else if (playHitSFX)
-            {
-                PlayAttackImpactClientRpc(isSlam: false, transform.position + Vector3.up * 1.8f);
-            }
+            // Classification, progressive adaptation, retaliation and Old Bird rules live in MahoragaAI.Combat.cs.
+            HandleDamageServer(force, playerWhoHit, playHitSFX, hitID);
         }
 
         public override void HitFromExplosion(float distance)
@@ -1272,21 +1268,25 @@ namespace MahoragaLC.AI
                 return;
             }
 
+            float stunTime = setToStunTime;
             if (IsServer)
             {
                 MahoragaConfig? cfg = MahoragaConfig.Current;
                 int maxHp = cfg != null ? cfg.MaxHP.Value : 18;
-                int threshold = cfg != null ? cfg.AdaptationThreshold.Value : 2;
-                float healPct = cfg != null ? cfg.AdaptationHealPercent.Value : 0.20f;
+                AdaptationSettings settings = cfg != null ? cfg.Adaptation : _fallbackAdaptation;
 
                 StunEvaluation eval = _adaptation.EvaluateStun(
                     category,
                     enemyHP,
                     maxHp,
                     isCurrentlyAdapting: false,
-                    threshold,
-                    healPct,
+                    settings,
                     Time.time);
+
+                if (setStunnedByPlayer != null && PlayerIsTargetable(setStunnedByPlayer))
+                {
+                    RegisterPlayerAggression(setStunnedByPlayer, 2, Time.time);
+                }
 
                 if (eval.TriggeredAdaptation)
                 {
@@ -1301,9 +1301,21 @@ namespace MahoragaLC.AI
                     EnterAdaptationStateServer(category, eval.FinalHP);
                     return;
                 }
+
+                if (eval.TriggeredWheelClick)
+                {
+                    TriggerWheelClickClientRpc((byte)category, (byte)eval.StageAfter, _adaptation.AdaptedMask, _adaptation.WheelStepCount, enemyHP);
+                }
+
+                // Partially adapted: the stun is shorter (and ignored when it would last a blink).
+                stunTime = setToStunTime * eval.StunTimeMultiplier;
+                if (eval.StunTimeMultiplier < 0.05f)
+                {
+                    return;
+                }
             }
 
-            base.SetEnemyStunned(true, setToStunTime, setStunnedByPlayer);
+            base.SetEnemyStunned(true, stunTime, setStunnedByPlayer);
         }
 
         public override void OnCollideWithPlayer(Collider other)
@@ -1377,7 +1389,8 @@ namespace MahoragaLC.AI
         {
             int stateIdx = (int)newState;
             bool wasChasing = currentBehaviourStateIndex == (int)MahoragaState.Chasing
-                || currentBehaviourStateIndex == (int)MahoragaState.Attacking;
+                || currentBehaviourStateIndex == (int)MahoragaState.Attacking
+                || currentBehaviourStateIndex == (int)MahoragaState.EngagingEnemy;
 
             bool playRoar = !wasChasing
                 && newState == MahoragaState.Chasing
@@ -1611,6 +1624,21 @@ namespace MahoragaLC.AI
                 deathAnimation: 0,
                 fallDamage: false,
                 force: knockbackForce);
+
+            // DamagePlayer only uses 'force' for the ragdoll of a killed player. A living player is shoved the way Landmine
+            // does it (externalForceAutoFade is decayed by PlayerControllerB itself), computed here on the owning client.
+            if (!localPlayer.isPlayerDead && knockbackForce.sqrMagnitude > 0.25f)
+            {
+                if (knockbackForce.magnitude > 10f)
+                {
+                    localPlayer.CancelSpecialTriggerAnimations();
+                }
+
+                if (!localPlayer.inVehicleAnimation)
+                {
+                    localPlayer.externalForceAutoFade += knockbackForce;
+                }
+            }
         }
 
         [ClientRpc]
@@ -1665,6 +1693,8 @@ namespace MahoragaLC.AI
             // Smooth +45° rotation around WheelBone local Y synced with t = 0.25s..1.05s of Adapt_WheelSpin.
             _wheelSpinStartAngle = _wheelDisplayAngle;
             _wheelSpinTargetAngle = wheelStepCount * 45f;
+            _wheelSpinDelay = WheelSpinDelay;
+            _wheelSpinDuration = WheelSpinDuration;
             _wheelSpinElapsed = 0f;
             _wheelSpinActive = true;
 
@@ -1675,6 +1705,36 @@ namespace MahoragaLC.AI
             _emissiveFlashTimer = _emissiveFlashDuration;
 
             audioController?.PlayWheelTurn();
+        }
+
+        /// <summary>
+        /// Intermediate adaptation stage: a quick +45 degree click of the Wheel plus a muted gong. Mahoraga is NOT frozen
+        /// (no Adapting stance, no animator trigger), unlike the final stage handled by TriggerAdaptationClientRpc.
+        /// </summary>
+        [ClientRpc]
+        public void TriggerWheelClickClientRpc(byte categoryId, byte stage, int newAdaptedMask, int wheelStepCount, int newHP)
+        {
+            _adaptation.SyncFromServer(newAdaptedMask, wheelStepCount);
+            if (!IsServer)
+            {
+                enemyHP = newHP;
+            }
+
+            _wheelSpinStartAngle = _wheelDisplayAngle;
+            _wheelSpinTargetAngle = wheelStepCount * 45f;
+            _wheelSpinDelay = 0f;
+            _wheelSpinDuration = 0.28f;
+            _wheelSpinElapsed = 0f;
+            _wheelSpinActive = true;
+
+            if (!isEnemyDead)
+            {
+                _emissiveDelayTimer = 0f;
+                _emissivePeakIntensity = 22f + stage * 6f;
+                _emissiveFlashDuration = 0.7f;
+                _emissiveFlashTimer = _emissiveFlashDuration;
+                audioController?.PlayWheelClick(0.55f + 0.1f * stage);
+            }
         }
 
         [ClientRpc]
@@ -1716,7 +1776,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            if (Vector3.Distance(transform.position, player.transform.position) > 3.5f)
+            if (Vector3.Distance(transform.position, player.transform.position) > 3.5f * ScaleFactor)
             {
                 return;
             }
@@ -1755,6 +1815,7 @@ namespace MahoragaLC.AI
                 _adaptation.WheelStepCount,
                 enemyHP,
                 isEnemyDead,
+                _lastBroadcastScale,
                 targetParams);
 
             // Late join / late spawn while the summoning is running: resume at the right moment.
@@ -1762,7 +1823,7 @@ namespace MahoragaLC.AI
         }
 
         [ClientRpc]
-        public void ApplyFullSyncClientRpc(int state, int adaptedMask, int wheelStepCount, int currentHP, bool dead, ClientRpcParams rpcParams = default)
+        public void ApplyFullSyncClientRpc(int state, int adaptedMask, int wheelStepCount, int currentHP, bool dead, float growthScale, ClientRpcParams rpcParams = default)
         {
             if (IsServer)
             {
@@ -1775,6 +1836,11 @@ namespace MahoragaLC.AI
 
             _wheelSpinActive = false;
             _wheelDisplayAngle = wheelStepCount * 45f;
+
+            // Late joiners snap straight to the synced size (no growth animation).
+            _targetScale = Mathf.Clamp(growthScale, 1f, 3.5f);
+            _currentScale = _targetScale;
+            ApplyScale(_currentScale);
 
             if (dead && !isEnemyDead)
             {
