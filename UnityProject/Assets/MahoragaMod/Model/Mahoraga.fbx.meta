@@ -34,8 +34,8 @@ ModelImporter:
     clipAnimations:
     - serializedVersion: 16
       name: Adapt_WheelSpin
-      takeName: Armature|Adapt_WheelSpin
-      internalID: 8828232527100077358
+      takeName: Mahoraga_rig|Adapt_WheelSpin
+      internalID: -2323865243336807430
       firstFrame: 0
       lastFrame: 65
       wrapMode: 0
@@ -63,8 +63,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Attack_Cleave
-      takeName: Armature|Attack_Cleave
-      internalID: -9177538904252121244
+      takeName: Mahoraga_rig|Attack_Cleave
+      internalID: 3218409450550646134
       firstFrame: 0
       lastFrame: 34
       wrapMode: 0
@@ -92,8 +92,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Attack_Slam
-      takeName: Armature|Attack_Slam
-      internalID: 7965392349439233756
+      takeName: Mahoraga_rig|Attack_Slam
+      internalID: -6648084217029721628
       firstFrame: 0
       lastFrame: 43
       wrapMode: 0
@@ -121,8 +121,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Death
-      takeName: Armature|Death
-      internalID: -982115091633673366
+      takeName: Mahoraga_rig|Death
+      internalID: -3444638282052351577
       firstFrame: 0
       lastFrame: 65
       wrapMode: 0
@@ -150,8 +150,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Idle
-      takeName: Armature|Idle
-      internalID: -8945691123924629249
+      takeName: Mahoraga_rig|Idle
+      internalID: -5717981730573165051
       firstFrame: 0
       lastFrame: 79
       wrapMode: 0
@@ -179,8 +179,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Run
-      takeName: Armature|Run
-      internalID: -7551964380084998518
+      takeName: Mahoraga_rig|Run
+      internalID: 1036219627174897285
       firstFrame: 0
       lastFrame: 23
       wrapMode: 0
@@ -208,8 +208,8 @@ ModelImporter:
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
       name: Stun
-      takeName: Armature|Stun
-      internalID: 1982136495307655951
+      takeName: Mahoraga_rig|Stun
+      internalID: -9063014851911301417
       firstFrame: 0
       lastFrame: 29
       wrapMode: 0
@@ -236,9 +236,38 @@ ModelImporter:
       maskSource: {instanceID: 0}
       additiveReferencePoseFrame: 0
     - serializedVersion: 16
+      name: Summon_Emerge
+      takeName: Mahoraga_rig|Summon_Emerge
+      internalID: -8019848758245097595
+      firstFrame: 0
+      lastFrame: 144
+      wrapMode: 0
+      orientationOffsetY: 0
+      level: 0
+      cycleOffset: 0
+      loop: 0
+      hasAdditiveReferencePose: 0
+      loopTime: 0
+      loopBlend: 0
+      loopBlendOrientation: 1
+      loopBlendPositionY: 0
+      loopBlendPositionXZ: 1
+      keepOriginalOrientation: 1
+      keepOriginalPositionY: 1
+      keepOriginalPositionXZ: 1
+      heightFromFeet: 0
+      mirror: 0
+      bodyMask: 01000000010000000100000001000000010000000100000001000000010000000100000001000000010000000100000001000000
+      curves: []
+      events: []
+      transformMask: []
+      maskType: 3
+      maskSource: {instanceID: 0}
+      additiveReferencePoseFrame: 0
+    - serializedVersion: 16
       name: Walk
-      takeName: Armature|Walk
-      internalID: 8349542763059015795
+      takeName: Mahoraga_rig|Walk
+      internalID: 7055368499851570734
       firstFrame: 0
       lastFrame: 39
       wrapMode: 0

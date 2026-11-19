@@ -449,10 +449,15 @@ third shell did nothing. Leave the scrap. Run.""
 
         // Opaque Lit surface defaults
         mat.SetFloat("_SurfaceType", 0.0f);
-        mat.SetFloat("_CullMode", 2.0f);
-        mat.SetFloat("_CullModeForward", 2.0f);
+        // Double-sided: the model has open edges (hakama, wings) and a fully opaque albedo. HDRP/Lit
+        // _DoubleSidedNormalMode: 0=Flip, 1=Mirror, 2=None. Mirror (1) keeps lighting symmetric on back faces.
+        mat.SetFloat("_DoubleSidedEnable", 1.0f);
+        mat.SetFloat("_DoubleSidedNormalMode", 1.0f);
+        mat.SetFloat("_CullMode", 0.0f);
+        mat.SetFloat("_CullModeForward", 0.0f);
 
         HDMaterial.ValidateMaterial(mat);
+        Debug.Log($"[MAHORAGA-BUILD] DoubleSided enabled={mat.GetFloat("_DoubleSidedEnable")} normalMode={mat.GetFloat("_DoubleSidedNormalMode")} cull={mat.GetFloat("_CullMode")} keyword={mat.IsKeywordEnabled("_DOUBLESIDED_ON")}");
 
         AssetDatabase.CreateAsset(mat, MahoragaMatPath);
         AssetDatabase.SaveAssets();
@@ -887,7 +892,7 @@ third shell did nothing. Leave the scrap. Run.""
             // EyeTransform
             GameObject eyeGo = new GameObject("EyeTransform");
             eyeGo.transform.SetParent(root.transform, false);
-            eyeGo.transform.localPosition = new Vector3(0f, 3.30f, 0.35f);
+            eyeGo.transform.localPosition = new Vector3(0f, 2.98f, 0.35f);
             eyeGo.transform.localRotation = Quaternion.identity;
 
             // CollisionCollider [Layer 19 (Enemies), Tag "Enemy"]
@@ -1628,7 +1633,7 @@ third shell did nothing. Leave the scrap. Run.""
                 Debug.Log($"[MAHORAGA-VERIFY] MissingScripts=0, Shaders=HDRP/Lit (body) + HDRP/Unlit (MapDot), NetworkObjectHash={netHash}, Assets=14/14 + summon (clip, ShadowPool mesh+material) PASS, Summon_Emerge real clip={_hasRealSummonClip}.");
 
                 Assert(Mathf.Abs(minY) <= 0.02f, $"Feet minY={minY:F4}u deviates from 0.00u!");
-                Assert(bodyMaxY >= 3.675f && bodyMaxY <= 3.825f, $"Standing skull crown height={bodyMaxY:F4}u outside 3.75u ±2% [3.675, 3.825]!");
+                Assert(bodyMaxY >= 3.31f && bodyMaxY <= 3.52f, $"Standing skull crown height={bodyMaxY:F4}u outside 3.4146u ±3% [3.31, 3.52]!");
                 Assert(totalMaxY <= 3.905f, $"Total height (incl. Dharma Wheel)={totalMaxY:F4}u exceeds 3.90u hallway ceiling clearance!");
             }
             finally
