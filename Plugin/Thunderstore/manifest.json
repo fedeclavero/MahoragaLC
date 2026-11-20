@@ -1,6 +1,6 @@
 {
   "name": "MahoragaLC",
-  "version_number": "1.1.0",
+  "version_number": "1.1.1",
   "website_url": "https://github.com/fedeclavero/MahoragaLC",
   "description": "Adds Mahoraga from Jujutsu Kaisen to Lethal Company. Fight an adapting boss with a turning Dharma Wheel, shadow ambushes, and Old Bird battles.",
   "dependencies": [

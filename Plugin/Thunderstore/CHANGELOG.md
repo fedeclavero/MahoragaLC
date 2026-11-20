@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Old Bird attacks now build toward 1.5 times the robot's standing height. Each distinct missile blast counts, including rapid bursts.
+- Mahoraga approaches and strikes the Old Bird's body, keeping the same range and obstruction checks through windup and impact.
+- The host commits defeated Old Birds to despawn before playing the explosion effects.
+
 ## 1.1.0
 
 - Reworked player detection around audible events and close-range contact. Shadow ambushes follow a recorded noise.

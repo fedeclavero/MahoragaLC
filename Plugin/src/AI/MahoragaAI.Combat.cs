@@ -25,6 +25,7 @@ namespace MahoragaLC.AI
         private readonly Dictionary<Type, AdaptationCategory> _customWeaponCategories = new Dictionary<Type, AdaptationCategory>();
         private readonly CoordinatedShovelStrike _shovelStrike = new CoordinatedShovelStrike();
         private int _oldBirdVolleyStage;
+        private uint _lastOldBirdDamageBlast;
         private float _oldBirdVolleyStartedAt = float.NegativeInfinity;
         private readonly RegenerationTracker _regen = new RegenerationTracker();
         private readonly Dictionary<int, EnemyAI> _aggressorLookup = new Dictionary<int, EnemyAI>();
@@ -61,7 +62,6 @@ namespace MahoragaLC.AI
 
         private void ClearCombatState()
         {
-            _pendingDestructions.Clear();
             _oldBirdDurability.Clear();
             _oldBirdHeights.Clear();
             _pushes.Clear();
@@ -146,7 +146,16 @@ namespace MahoragaLC.AI
         // Damage pipeline (called from HitEnemy on the server)
         // =====================================================================
 
-        private void HandleDamageServer(int force, PlayerControllerB? playerWhoHit, bool playHitSFX, int hitID)
+        internal void ReceiveDirectOldBirdImpactServer(RadMechAI shooter, uint blast)
+        {
+            if (IsServer && !isEnemyDead && !IsSummonInvulnerable)
+            {
+                HandleDamageServer(6, null, false, -1, shooter, blast);
+            }
+        }
+
+        private void HandleDamageServer(int force, PlayerControllerB? playerWhoHit, bool playHitSFX, int hitID,
+            RadMechAI? directMissileSource = null, uint directBlast = 0)
         {
             float now = Time.time;
             MahoragaConfig? cfg = MahoragaConfig.Current;
@@ -158,7 +167,19 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            RadMechAI? missileSource = playerWhoHit == null ? ExplosionTrackingPatch.MissileSource : null;
+            RadMechAI? missileSource = playerWhoHit == null
+                ? directMissileSource ?? ExplosionTrackingPatch.MissileSource
+                : null;
+            uint blast = directMissileSource != null ? directBlast : ExplosionTrackingPatch.MissileBlastId;
+            if (missileSource != null && blast != 0)
+            {
+                if (blast == _lastOldBirdDamageBlast)
+                {
+                    return;
+                }
+                _lastOldBirdDamageBlast = blast;
+            }
+
             EnemyAI? contactSource = playerWhoHit == null ? EnemyHitSourcePatch.GetAttacker(this) : null;
             bool isExplosion = playerWhoHit == null && ExplosionTrackingPatch.InExplosion;
             AdaptationCategory category = ResolveDamageCategory(playerWhoHit, hitID, force,
@@ -240,7 +261,7 @@ namespace MahoragaLC.AI
 
             if (category == AdaptationCategory.OldBirdMissile && missileSource is RadMechAI oldBird)
             {
-                OnOldBirdDamagedMe(oldBird, now);
+                OnOldBirdDamagedMe(oldBird, blast);
             }
 
             // ---- Wheel (+45 deg on every adaptation stage AND every Old Bird hit / growth step) ----
@@ -476,8 +497,11 @@ namespace MahoragaLC.AI
                 return oldBird.transform.position;
             }
 
-            sampleRadius = 4f;
-            return oldBird.transform.position;
+            sampleRadius = 2.5f;
+            Vector3 offset = Vector3.ProjectOnPlane(transform.position - oldBird.transform.position, Vector3.up);
+            float standoff = Mathf.Min(CleaveReach * ScaleFactor * 0.6f,
+                (agent?.radius ?? 0.85f) + (oldBird.agent?.radius ?? 1f));
+            return oldBird.transform.position + offset.normalized * standoff;
         }
 
         private void EnterEngageEnemyStateServer(EnemyAI enemy, PlayerControllerB? resumePlayer)
@@ -550,8 +574,23 @@ namespace MahoragaLC.AI
                 return;
             }
 
+            if (oldBird != null)
+            {
+                bool slam = ShouldUseSlamAttack(forceSlam: false);
+                if (!_jumping && _attackCooldownTimer <= 0f &&
+                    TryGetOldBirdStrikePoint(oldBird, slam, requireFacing: false, out _))
+                {
+                    EnterAttackStateServer(slam, oldBird);
+                    return;
+                }
+            }
+
             Vector3 approachPos = GetEnemyApproach(enemy!, out float sampleRadius);
             bool pathOk = SetSafeDestinationServer(approachPos, sampleRadius);
+            if (!pathOk && oldBird != null && !oldBird.inFlyingMode)
+            {
+                pathOk = SetSafeDestinationServer(oldBird.transform.position, sampleRadius);
+            }
 
             bool validatePath = (_engageRepathCounter++ % 3) == 0;
             if (validatePath)
@@ -570,8 +609,7 @@ namespace MahoragaLC.AI
                     : _engageUnreachableTimer + AIIntervalTime * 3f;
             }
 
-            // Swing when in horizontal and vertical reach (never swing at a flying Old Bird high in the sky).
-            if (!_jumping && _attackCooldownTimer <= 0f && (oldBird == null || !oldBird.inFlyingMode) && dist <= EngageEntryRangeBase * ScaleFactor)
+            if (oldBird == null && !_jumping && _attackCooldownTimer <= 0f && dist <= EngageEntryRangeBase * ScaleFactor)
             {
                 TryGetEnemySurfacePoint(enemy!, chest, _enemyTargetDetectors, out Vector3 surface);
                 if (Mathf.Abs(surface.y - chest.y) <= VerticalHitTolerance * ScaleFactor * 1.4f
@@ -672,42 +710,12 @@ namespace MahoragaLC.AI
                 return false;
             }
 
-            float scale = ScaleFactor;
-            Vector3 chest = transform.position + Vector3.up * 1.4f * scale;
-
             bool anyHit = false;
             List<EnemyAI> all = RoundManager.Instance.SpawnedEnemies;
             for (int i = 0; i < all.Count; i++)
             {
-                if (!(all[i] is RadMechAI oldBird)
-                    || oldBird == this
-                    || oldBird.isEnemyDead
-                    || oldBird.isOutside != isOutside
-                    || IsDestructionPending(oldBird))
-                {
-                    continue;
-                }
-
-                EnemyAICollisionDetect[]? dets = oldBird == _attackEnemyTarget ? _enemyTargetDetectors : null;
-                if (!TryGetEnemySurfacePoint(oldBird, chest, dets, out Vector3 p))
-                {
-                    continue;
-                }
-
-                Vector3 flat = p - transform.position;
-                flat.y = 0f;
-                float horiz = flat.magnitude;
-                if (horiz > reach || Mathf.Abs(p.y - chest.y) > VerticalHitTolerance * scale * 1.4f)
-                {
-                    continue;
-                }
-
-                if (!isSlam && horiz > 0.5f && Vector3.Angle(transform.forward, flat) > CleaveHalfArcDeg + 20f)
-                {
-                    continue;
-                }
-
-                if (!HasClearStrikePath(rayOrigin, p, oldBird))
+                if (!(all[i] is RadMechAI oldBird) || oldBird.isEnemyDead || oldBird.isOutside != isOutside ||
+                    IsDestructionPending(oldBird) || !TryGetOldBirdStrikePoint(oldBird, isSlam, requireFacing: true, out _))
                 {
                     continue;
                 }
@@ -767,6 +775,55 @@ namespace MahoragaLC.AI
                 || !Physics.Linecast(from, feet + Vector3.up * 0.4f, mask, QueryTriggerInteraction.Ignore);
         }
 
+        private bool TryGetOldBirdStrikePoint(RadMechAI bird, bool isSlam, bool requireFacing, out Vector3 point)
+        {
+            float scale = ScaleFactor;
+            float standHeight = Mathf.Min(1.4f * scale, 2.6f);
+            Vector3 strikeOrigin = transform.position + Vector3.up * standHeight;
+
+            // The vanilla EnemyAICollisionDetect is ClawTrigger. Its position depends on the attacking arm.
+            // The bird's own collider tracks its body regardless of the claw or flight animation.
+            if (bird.ownCollider != null && bird.ownCollider.enabled)
+            {
+                var collider = bird.ownCollider;
+                point = collider is MeshCollider mesh && !mesh.convex
+                    ? collider.bounds.ClosestPoint(strikeOrigin)
+                    : collider.ClosestPoint(strikeOrigin);
+                if (CanStrikeOldBirdPoint(bird, point, strikeOrigin, isSlam, requireFacing))
+                {
+                    return true;
+                }
+
+                point = collider.bounds.center;
+                if (CanStrikeOldBirdPoint(bird, point, strikeOrigin, isSlam, requireFacing))
+                {
+                    return true;
+                }
+            }
+
+            point = bird.centerPosition != null ? bird.centerPosition.position : bird.transform.position + Vector3.up * 1.6f;
+            return CanStrikeOldBirdPoint(bird, point, strikeOrigin, isSlam, requireFacing);
+        }
+
+        private bool CanStrikeOldBirdPoint(RadMechAI bird, Vector3 point, Vector3 from, bool isSlam, bool requireFacing)
+        {
+            Vector3 delta = point - from;
+            if (Mathf.Abs(delta.y) > VerticalHitTolerance * ScaleFactor * 1.4f)
+            {
+                return false;
+            }
+
+            delta.y = 0f;
+            float reach = (isSlam ? SlamReach : CleaveReach) * ScaleFactor;
+            if (delta.sqrMagnitude > reach * reach ||
+                (requireFacing && !isSlam && delta.sqrMagnitude > 0.25f &&
+                    Vector3.Angle(transform.forward, delta) > CleaveHalfArcDeg + 20f))
+            {
+                return false;
+            }
+            return HasClearStrikePath(from, point, bird);
+        }
+
         private static EnemyAICollisionDetect[]? GetDetectors(EnemyAI e, EnemyAICollisionDetect[]? cached)
         {
             if (cached != null && cached.Length > 0)
@@ -819,8 +876,16 @@ namespace MahoragaLC.AI
 
         private float DistanceToEnemySurface(EnemyAI e, Vector3 from)
         {
-            TryGetEnemySurfacePoint(e, from, e == _enemyTarget ? _enemyTargetDetectors : null, out Vector3 p);
-            Vector3 d = p - from;
+            Vector3 point;
+            if (e is RadMechAI bird && bird.ownCollider != null && bird.ownCollider.enabled)
+            {
+                point = bird.ownCollider.bounds.ClosestPoint(from);
+            }
+            else
+            {
+                TryGetEnemySurfacePoint(e, from, e == _enemyTarget ? _enemyTargetDetectors : null, out point);
+            }
+            Vector3 d = point - from;
             d.y = 0f;
             return d.magnitude;
         }

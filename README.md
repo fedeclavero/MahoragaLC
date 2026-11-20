@@ -2,13 +2,13 @@
 
 Mod de **Lethal Company** que agrega a **Mahoraga** (el General Divino de las Diez Sombras, de *Jujutsu Kaisen*) como enemigo: un gigante que te caza por la instalación, fuerza puertas con llave y se **adapta** a cada arma con la que lo golpeás girando su Rueda del Dharma.
 
-> **En desarrollo activo.** La versión 1.1.0 ya incluye los sistemas principales del encuentro. Seguimos afinando el balance, la navegación y la compatibilidad con mapas y mods.
+> **En desarrollo activo.** La versión 1.1.1 ya incluye los sistemas principales del encuentro. Seguimos afinando el balance, la navegación y la compatibilidad con mapas y mods.
 
 ## Cómo funciona el encuentro
 
 - **Percepción.** Patrulla zonas navegables en interiores y exteriores. Reacciona a sonidos del juego y detecta a un jugador silencioso a aproximadamente un metro, si hay paso libre. Agacharte silencia tus pasos. Las emboscadas tardías parten de una posición donde se oyó un ruido.
 - **Movilidad.** Usa escaleras transitables y salta huecos cortos con aterrizaje validado. Tras crecer puede saltar al borde de la nave abierta si hay piso y despeje suficientes.
-- **Otros enemigos.** Busca Old Birds en su zona. Contra otros mobs responde cuando un golpe permite identificar al agresor. Los impactos de misil atribuibles a un Old Bird hacen crecer a Mahoraga en exterior.
+- **Otros enemigos.** Busca Old Birds en su zona. Contra otros mobs responde cuando un golpe permite identificar al agresor. En exterior, seis impactos distintos de misil llevan a Mahoraga a 1,5 veces la altura medida del Old Bird con la configuración por defecto.
 - **Adaptación.** La pala, el cuchillo, la escopeta, los explosivos, los impactos directos del Cruiser y los misiles tienen progresiones propias. Cuatro jugadores pueden rematarlo con palas coordinadas en 0,75 s. Si la pala ya giró la rueda, el mismo equipo puede sumar un golpe adicional por etapa dentro de un total de 3 s. Antes de adaptarse a misiles, tres Old Birds pueden levantar su protección de vida. Cada etapa de misiles suma un Old Bird al requisito de la próxima ráfaga.
 - **Aturdimiento.** Las dos primeras granadas aturdidoras duran lo que indica el juego. Desde la tercera, duran la mitad. Los aturdimientos temporales de equipo que llaman al método del juego tienen el mismo comportamiento por tipo de objeto identificable.
 

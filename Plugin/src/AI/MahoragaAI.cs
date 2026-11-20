@@ -152,6 +152,7 @@ namespace MahoragaLC.AI
                 SetEnemyOutside(spawnedOutside);
             }
             ConfigureTraversal();
+            MeasureBaseVisualHeight();
 
             _baseAgentRadius = agent != null ? agent.radius : (isOutside ? 0.85f : 0.55f);
             SyncBestiaryScanNodeId();
@@ -1079,6 +1080,13 @@ namespace MahoragaLC.AI
         {
             StopSearch(currentSearch);
             _attackEnemyTarget = enemyTarget;
+            if (enemyTarget is RadMechAI && agent != null && agent.enabled && agent.isOnNavMesh)
+            {
+                // Finish the swing from the chosen position. An active path can turn the boss away during windup.
+                moveTowardsDestination = false;
+                agent.ResetPath();
+                prevDestination = Vector3.zero;
+            }
             _currentAttackIsSlam = isSlam;
             _attackElapsed = 0f;
             _attackHitResolved = false;
@@ -1099,7 +1107,7 @@ namespace MahoragaLC.AI
 
             if (agent != null && agent.enabled)
             {
-                agent.speed = _attackElapsed < windup ? 1.2f : 0f;
+                agent.speed = _attackEnemyTarget is not RadMechAI && _attackElapsed < windup ? 1.2f : 0f;
             }
 
             // Track target smoothly during windup.
@@ -1107,7 +1115,14 @@ namespace MahoragaLC.AI
             {
                 if (_attackEnemyTarget != null && !_attackEnemyTarget.isEnemyDead)
                 {
-                    FacePositionSmooth(_attackEnemyTarget.transform.position, 9f, dt);
+                    Vector3 aim = _attackEnemyTarget.transform.position;
+                    if (_attackEnemyTarget is RadMechAI bird &&
+                        TryGetOldBirdStrikePoint(bird, _currentAttackIsSlam, requireFacing: false, out Vector3 contact) &&
+                        Vector3.ProjectOnPlane(contact - transform.position, Vector3.up).sqrMagnitude > 0.25f)
+                    {
+                        aim = contact;
+                    }
+                    FacePositionSmooth(aim, 9f, dt);
                 }
                 else if (targetPlayer != null && PlayerIsTargetable(targetPlayer))
                 {
@@ -1543,6 +1558,11 @@ namespace MahoragaLC.AI
 
         public override void OnDestroy()
         {
+            if (IsServer && NetworkManager != null && !NetworkManager.ShutdownInProgress)
+            {
+                TickPendingOldBirdDestructions(float.PositiveInfinity);
+            }
+            _pendingDestructions.Clear();
             ClearCombatState();
             EndSummonPresentation();
             EndSubmergePresentation();
@@ -1966,7 +1986,7 @@ namespace MahoragaLC.AI
             _wheelDisplayAngle = ComputeWheelAngle(wheelStepCount);
 
             // Late joiners snap straight to the synced size (no growth animation).
-            _targetScale = Mathf.Clamp(growthScale, 1f, 3.5f);
+            _targetScale = GrowthMath.SanitizeScale(growthScale);
             _currentScale = _targetScale;
             ApplyScale(_currentScale);
 

@@ -38,7 +38,7 @@ internal static class Program
         Run("CooldownSet blocks then expires", TestCooldownSet);
         Run("Enemy engagement always terminates (timeout, immortal, unreachable, distance) and players preempt fairly", TestEngagementPolicy);
         Run("DistinctAttackerWindow counts different attackers inside the window", TestDistinctAttackers);
-        Run("GrowthMath: match scale, steps, cap, indoor reset, approach", TestGrowthMath);
+        Run("GrowthMath: 1.5 times Old Bird height, steps, network scale and indoor reset", TestGrowthMath);
         Run("Old Bird durability and knockback maths", TestDurabilityAndKnockback);
         Run("Old Bird #1 priority (EvaluateOldBird), AdvanceWheelStep post-stage-3, and +45 deg Wheel progression (0..360)", TestOldBirdEngagementAndWheelProgression);
         Run("ShadowAmbush: CanTriggerAmbush gates (toggle, time, lost sight, cooldown, Old Bird priority, AI state)", SummonAndHuntTests.TestShadowAmbushGating);
@@ -533,20 +533,22 @@ internal static class Program
 
     private static void TestGrowthMath()
     {
-        // Old Bird 7.5 m vs Mahoraga 3.75 m -> match scale 2.0, capped by the config.
-        Assert(Math.Abs(GrowthMath.ScaleToMatch(7.5f, 3.75f, 3f) - 2f) < 1e-4f, "match = height ratio");
-        Assert(Math.Abs(GrowthMath.ScaleToMatch(7.5f, 3.75f, 1.5f) - 1.5f) < 1e-4f, "config cap applies");
-        Assert(GrowthMath.ScaleToMatch(2f, 3.75f, 3f) == 1f, "never shrinks below base for short targets");
-        // Six equal steps reach the match exactly and stop there.
+        const float birdHeight = 9.8f;
+        const float baseHeight = 3.94f;
+        float expected = birdHeight * 1.5f;
+        float targetScale = GrowthMath.ScaleForOldBird(birdHeight, baseHeight, GrowthMath.DefaultOldBirdHeightMultiplier);
+        Assert(Math.Abs(targetScale * baseHeight - expected) < 1e-4f, "the ratio is relative to the Bird's height");
+        Assert(targetScale > 3.5f, "full growth can exceed the old client clamp");
+        Assert(GrowthMath.SanitizeScale(targetScale) == targetScale, "clients retain the host target");
+        Assert(GrowthMath.ScaleForOldBird(2f, baseHeight, 1.5f) == 1f, "never shrinks below base size");
+        Assert(GrowthMath.SanitizeScale(float.NaN) == 1f, "invalid scales are ignored");
+
         float earned = 1f;
-        for (int i = 0; i < 6; i++) earned = GrowthMath.NextEarnedScale(earned, 2f, 6);
-        Assert(Math.Abs(earned - 2f) < 1e-4f, "6 steps reach the Old Bird height");
-        Assert(Math.Abs(GrowthMath.NextEarnedScale(earned, 2f, 6) - 2f) < 1e-4f, "never past it");
-        Assert(Math.Abs(GrowthMath.NextEarnedScale(1f, 2f, 6) - (1f + 1f / 6f)) < 1e-4f, "each step is 1/6 of the way");
-        // Indoors is always base size; earned growth is kept for when it leaves.
-        Assert(GrowthMath.EffectiveScale(1.8f, outside: false, maxScale: 2f) == 1f, "indoors = base size");
-        Assert(Math.Abs(GrowthMath.EffectiveScale(1.8f, outside: true, maxScale: 2f) - 1.8f) < 1e-4f, "outdoors = earned");
-        Assert(GrowthMath.EffectiveScale(2.5f, outside: true, maxScale: 2f) == 2f, "max cap applies");
+        for (int i = 0; i < 6; i++) earned = GrowthMath.NextEarnedScale(earned, targetScale, 6);
+        Assert(Math.Abs(earned - targetScale) < 1e-4f, "six hits reach the target scale");
+        Assert(Math.Abs(GrowthMath.NextEarnedScale(earned, targetScale, 6) - targetScale) < 1e-4f, "never past it");
+        Assert(GrowthMath.EffectiveScale(earned, outside: false) == 1f, "indoors is base size");
+        Assert(GrowthMath.EffectiveScale(earned, outside: true) == earned, "outdoors retains earned growth");
         // Approach converges and is monotonic.
         float s = 1f;
         float prev = s;
@@ -661,6 +663,7 @@ internal static class Program
         cfgFile.SeedOrphaned("EnemyInteraction", "FightEnemies", "true");
         cfgFile.SeedOrphaned("EnemyInteraction", "EngageEnemiesWhenIdle", "true");
         cfgFile.SeedOrphaned("EnemyInteraction", "ImmortalEnemyEngageSeconds", "6.0");
+        cfgFile.SeedOrphaned("Growth", "GrowthMaxScale", "2.0");
 
         MahoragaConfig cfg = MahoragaConfig.Bind(cfgFile);
         Assert(MahoragaConfig.Current == cfg, "MahoragaConfig.Bind must set MahoragaConfig.Current");
@@ -671,6 +674,9 @@ internal static class Program
         Assert(cfg.OutdoorMoonRarityOverrides.Value == "", "OutdoorMoonRarityOverrides default must be empty string");
         Assert(cfg.OutdoorMaxCount.Value == 1, $"OutdoorMaxCount default must be 1 (got {cfg.OutdoorMaxCount.Value})");
         Assert(Math.Abs(cfg.OutdoorPowerLevel.Value - 3.0f) < 1e-4f, $"OutdoorPowerLevel default must be 3.0f (got {cfg.OutdoorPowerLevel.Value})");
+        Assert(cfg.OldBirdHeightMultiplier.Value == 1.5f && cfg.GrowthStepsToMatch.Value == 6,
+            "existing installs receive the new relative target and keep the six-step default");
+        Assert(!cfgFile.ContainsKey("Growth", "GrowthMaxScale"), "old self-relative cap is not rebound");
         Assert(cfg.FightOldBirds.Value == true, "FightOldBirds default must be true");
         Assert(Math.Abs(cfg.OldBirdSeekRange.Value - 250.0f) < 1e-4f, $"OldBirdSeekRange default must be 250f (got {cfg.OldBirdSeekRange.Value})");
         var seekRange = cfg.OldBirdSeekRange.Description.AcceptableValues as BepInEx.Configuration.AcceptableValueRange<float>;

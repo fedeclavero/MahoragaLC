@@ -370,29 +370,16 @@ namespace MahoragaLC.Patches
             }
 
             __instance.hitWall = true;
-            Vector3 startExplosionPos = origin - forward * 0.5f;
-            __instance.RadMechScript.StartExplosion(startExplosionPos, forward, calledByClient: false);
+            RadMechAI shooter = __instance.RadMechScript;
+            uint before = ExplosionTrackingPatch.LastOldBirdBlastId;
+            shooter.StartExplosion(origin - forward * 0.5f, forward, calledByClient: false);
 
-            // Landmine.SpawnExplosion measures distance to CollisionCollider.transform.position (at Y=0 feet) and skips
-            // enemies >= 4.5m away. When Mahoraga grows outdoors (up to ~7m tall), direct upper-torso hits exceed 4.5m
-            // from feet, so forward the direct hit once if vanilla SpawnExplosion skipped it.
-            if (hitMahoraga.IsOwner)
+            // The vanilla blast can miss a direct upper-body hit because it measures from the victim's feet.
+            // Feed the same explosion ID into the authoritative hit path so this cannot apply it twice.
+            uint blast = ExplosionTrackingPatch.LastOldBirdBlastId;
+            if (hitMahoraga.IsServer && blast != before)
             {
-                Vector3 actualExplosionPos = startExplosionPos - forward * 0.1f;
-                float feetDist = Vector3.Distance(actualExplosionPos, hitCollider.transform.position);
-                bool linecastBlocked = Physics.Linecast(
-                        actualExplosionPos,
-                        hitCollider.transform.position + Vector3.up * 0.3f,
-                        out RaycastHit blockHit,
-                        1073742080,
-                        QueryTriggerInteraction.Ignore)
-                    && (blockHit.collider.gameObject.layer == 30 || feetDist > 4f);
-
-                if (linecastBlocked || feetDist >= 4.5f)
-                {
-                    hitMahoraga.HitEnemyOnLocalClient(6);
-                    hitMahoraga.HitFromExplosion(Mathf.Min(feetDist, 4.4f));
-                }
+                hitMahoraga.ReceiveDirectOldBirdImpactServer(shooter, blast);
             }
 
             Object.Destroy(__instance.gameObject);

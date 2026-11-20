@@ -367,18 +367,20 @@ namespace MahoragaLC.AI
         public void Reset() => _fraction = 0f;
     }
 
-    /// <summary>Old Bird growth maths: Mahoraga grows in equal steps toward the Old Bird's height, capped.</summary>
+    /// <summary>Old Bird growth on the host and clients.</summary>
     public static class GrowthMath
     {
-        /// <summary>Scale needed to match <paramref name="targetHeight"/> given Mahoraga's unscaled height (never below 1, never above cap).</summary>
-        public static float ScaleToMatch(float targetHeight, float baseHeight, float maxScale)
-        {
-            if (baseHeight <= 0.01f)
-            {
-                return 1f;
-            }
+        public const float DefaultOldBirdHeightMultiplier = 1.5f;
+        public const float MaximumScale = 16f;
 
-            return Math.Clamp(targetHeight / baseHeight, 1f, Math.Max(1f, maxScale));
+        public static float SanitizeScale(float scale)
+        {
+            return float.IsNaN(scale) || float.IsInfinity(scale) ? 1f : Math.Clamp(scale, 1f, MaximumScale);
+        }
+
+        public static float ScaleForOldBird(float oldBirdHeight, float baseHeight, float heightMultiplier)
+        {
+            return baseHeight > 0.01f ? SanitizeScale(oldBirdHeight * heightMultiplier / baseHeight) : 1f;
         }
 
         /// <summary>One growth step: advances <c>1 / stepsToMatch</c> of the way from 1 to <paramref name="matchScale"/>, never past it.</summary>
@@ -395,9 +397,9 @@ namespace MahoragaLC.AI
         }
 
         /// <summary>Scale actually applied: earned growth outdoors, base size inside the facility.</summary>
-        public static float EffectiveScale(float earned, bool outside, float maxScale)
+        public static float EffectiveScale(float earned, bool outside)
         {
-            return outside ? Math.Clamp(earned, 1f, Math.Max(1f, maxScale)) : 1f;
+            return outside ? SanitizeScale(earned) : 1f;
         }
 
         /// <summary>Exponential approach used identically on every machine (frame-rate independent).</summary>

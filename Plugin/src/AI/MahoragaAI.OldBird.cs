@@ -194,8 +194,15 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            // Stop it shooting during the death throes (AimAndShootCycle only fires while stunNormalizedTimer <= 0).
+            // The server commits destruction before notifying the clients about visual effects.
+            _pendingDestructions.Add(new PendingDestruction { OldBird = oldBird, DespawnAt = Time.time + OldBirdDestructionDelay });
+            int id = oldBird.GetInstanceID();
+            _oldBirdDurability.Remove(id);
+            _ignoredEnemies.Block(id, Time.time + 60f);
+            _enemyAggro.Remove(id);
+
             oldBird.stunNormalizedTimer = 1f;
+            oldBird.isEnemyDead = true;
             if (oldBird.agent != null && oldBird.agent.enabled)
             {
                 oldBird.agent.speed = 0f;
@@ -203,12 +210,6 @@ namespace MahoragaLC.AI
 
             float height = MeasureOldBirdHeight(oldBird);
             OldBirdDestroyedClientRpc(new NetworkObjectReference(no), oldBird.transform.position, height);
-            _pendingDestructions.Add(new PendingDestruction { OldBird = oldBird, DespawnAt = Time.time + OldBirdDestructionDelay });
-
-            int id = oldBird.GetInstanceID();
-            _oldBirdDurability.Remove(id);
-            _ignoredEnemies.Block(id, Time.time + 60f);
-            _enemyAggro.Remove(id);
         }
 
         private void TickPendingOldBirdDestructions(float now)

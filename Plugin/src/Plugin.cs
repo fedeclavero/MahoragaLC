@@ -20,7 +20,7 @@ namespace MahoragaLC
     {
         public const string PluginGuid = "Fede.MahoragaLC";
         public const string PluginName = "MahoragaLC";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.1.1";
         private const string AssetBundleName = "mahoraga_assets";
 
         private static readonly string[] RequiredAudioClipNames =

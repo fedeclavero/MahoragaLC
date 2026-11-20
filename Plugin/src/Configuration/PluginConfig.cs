@@ -64,7 +64,7 @@ namespace MahoragaLC.Config
 
         // [Growth]
         public ConfigEntry<bool> GrowthEnabled { get; }
-        public ConfigEntry<float> GrowthMaxScale { get; }
+        public ConfigEntry<float> OldBirdHeightMultiplier { get; }
         public ConfigEntry<int> GrowthStepsToMatch { get; }
         public ConfigEntry<float> GrowthTransitionSeconds { get; }
 
@@ -356,22 +356,22 @@ namespace MahoragaLC.Config
                 "Growth",
                 "GrowthEnabled",
                 true,
-                "If true, Mahoraga grows (outdoors only) every time an Old Bird hurts it, up to the Old Bird's own height.");
+                "If true, Mahoraga grows (outdoors only) every time an Old Bird hurts it, toward OldBirdHeightMultiplier times the Old Bird's height.");
 
-            GrowthMaxScale = cfg.Bind(
+            OldBirdHeightMultiplier = cfg.Bind(
                 "Growth",
-                "GrowthMaxScale",
-                2.0f,
+                "OldBirdHeightMultiplier",
+                GrowthMath.DefaultOldBirdHeightMultiplier,
                 new ConfigDescription(
-                    "Maximum size multiplier (1.0 = never grows). The real target is the measured Old Bird height, capped by this.",
-                    new AcceptableValueRange<float>(1.0f, 3.0f)));
+                    "Final height relative to an Old Bird after enough distinct missile impacts (default 1.5).",
+                    new AcceptableValueRange<float>(1.0f, 2.0f)));
 
             GrowthStepsToMatch = cfg.Bind(
                 "Growth",
                 "GrowthStepsToMatch",
                 6,
                 new ConfigDescription(
-                    "Old Bird damage events needed to grow from base size all the way to the Old Bird's height.",
+                    "Distinct Old Bird impacts needed to reach the final size.",
                     new AcceptableValueRange<int>(1, 20)));
 
             GrowthTransitionSeconds = cfg.Bind(

@@ -6,7 +6,7 @@ using UnityEngine;
 namespace MahoragaLC.AI
 {
     /// <summary>
-    /// Old Bird "growth" (lore): every time an Old Bird hurts Mahoraga it grows a step toward that Old Bird's measured height,
+    /// Old Bird "growth" (lore): every time an Old Bird hurts Mahoraga it grows toward 1.5 times that Old Bird's measured height,
     /// outdoors only. Design: the NetworkObject root (NavMeshAgent, NGO, AI) is NEVER scaled; instead the visual
     /// "ModelContainer", the "CollisionCollider" (hit box), the "ScanNode" and the eye anchor are scaled/offset together.
     /// That keeps the NavMesh agent, NGO transform sync and audio sources intact. Attack reach, knockback and
@@ -18,13 +18,14 @@ namespace MahoragaLC.AI
     /// </summary>
     public partial class MahoragaAI
     {
-        private const float BaseHeightMeters = 3.41f; // ASSET_CONTRACT: feet-to-skull height at scale 1.
+        private const float FallbackBaseVisualHeight = 3.94f;
 
         private float _currentScale = 1f;
         private float _targetScale = 1f;
         private float _growthEarned = 1f;
         private float _lastBroadcastScale = 1f;
-        private float _lastGrowthEventTime = -999f;
+        private uint _lastGrowthBlast;
+        private float _baseVisualHeight;
         private float _growthTransitionSeconds = 2f;
         private bool _scaleRefsResolved;
         private Transform? _modelContainer;
@@ -127,93 +128,97 @@ namespace MahoragaLC.AI
         private void TickGrowthServer(MahoragaConfig? cfg)
         {
             bool enabled = cfg == null || cfg.GrowthEnabled.Value;
-            float max = cfg != null ? cfg.GrowthMaxScale.Value : 2f;
-            float desired = enabled ? GrowthMath.EffectiveScale(_growthEarned, isOutside, max) : 1f;
+            float desired = enabled ? GrowthMath.EffectiveScale(_growthEarned, isOutside) : 1f;
             if (Mathf.Abs(desired - _lastBroadcastScale) > 0.001f)
             {
                 _lastBroadcastScale = desired;
-                float transition = cfg != null ? cfg.GrowthTransitionSeconds.Value : 2f;
+                float transition = cfg?.GrowthTransitionSeconds.Value ?? 2f;
+                SetGrowthTarget(desired, transition);
                 SyncGrowthClientRpc(desired, transition);
             }
         }
 
-        /// <summary>An Old Bird just hurt us: advance one growth step toward its height (outdoors only).</summary>
-        private void OnOldBirdDamagedMe(RadMechAI oldBird, float now)
+        private void OnOldBirdDamagedMe(RadMechAI oldBird, uint blast)
         {
             MahoragaConfig? cfg = MahoragaConfig.Current;
-            if ((cfg != null && !cfg.GrowthEnabled.Value) || !isOutside || now - _lastGrowthEventTime < 0.5f)
+            if (!isOutside || blast == 0 || blast == _lastGrowthBlast ||
+                (cfg != null && !cfg.GrowthEnabled.Value))
             {
                 return;
             }
 
-            _lastGrowthEventTime = now;
-            float max = cfg != null ? cfg.GrowthMaxScale.Value : 2f;
-            int steps = cfg != null ? cfg.GrowthStepsToMatch.Value : 6;
-            float height = MeasureOldBirdHeight(oldBird);
-            float match = GrowthMath.ScaleToMatch(height, BaseHeightMeters, max);
+            if (_lastGrowthBlast == 0 && mainRenderer != null)
+            {
+                float standing = mainRenderer.bounds.size.y;
+                if (standing > 0.01f && (_baseVisualHeight < 0.01f ||
+                    (standing >= _baseVisualHeight * 0.85f && standing <= _baseVisualHeight * 1.15f)))
+                {
+                    _baseVisualHeight = standing;
+                }
+            }
+
+            _lastGrowthBlast = blast;
+            float heightMultiplier = cfg?.OldBirdHeightMultiplier.Value ?? GrowthMath.DefaultOldBirdHeightMultiplier;
+            int steps = cfg?.GrowthStepsToMatch.Value ?? 6;
+            float baseHeight = _baseVisualHeight > 0.01f ? _baseVisualHeight : FallbackBaseVisualHeight;
+            float match = GrowthMath.ScaleForOldBird(MeasureOldBirdHeight(oldBird), baseHeight, heightMultiplier);
             _growthEarned = GrowthMath.NextEarnedScale(_growthEarned, match, steps);
         }
 
-        /// <summary>
-        /// Real height of the Old Bird from its enabled mesh renderers (SkinnedMeshRenderer / MeshRenderer bounds), measured at runtime.
-        /// Ignored while it is flying (stretched pose); the largest grounded measurement is cached per instance.
-        /// </summary>
+        private void MeasureBaseVisualHeight()
+        {
+            if (mainRenderer is not SkinnedMeshRenderer renderer || renderer.sharedMesh == null)
+            {
+                return;
+            }
+
+            Vector3 size = renderer.sharedMesh.bounds.size;
+            Matrix4x4 modelToWorld = renderer.localToWorldMatrix;
+            _baseVisualHeight =
+                Mathf.Abs(modelToWorld.MultiplyVector(Vector3.right * size.x).y) +
+                Mathf.Abs(modelToWorld.MultiplyVector(Vector3.up * size.y).y) +
+                Mathf.Abs(modelToWorld.MultiplyVector(Vector3.forward * size.z).y);
+        }
+
+        /// <summary>Measure the grounded skinned body. Flying poses and temporary effects do not set its height.</summary>
         private float MeasureOldBirdHeight(RadMechAI oldBird)
         {
             int id = oldBird.GetInstanceID();
-            _oldBirdHeights.TryGetValue(id, out float cached);
-
-            bool flying = false;
-            try
+            if (_oldBirdHeights.TryGetValue(id, out float cached))
             {
-                flying = oldBird.inFlyingMode;
-            }
-            catch
-            {
-                // field renamed in a game update: measure anyway
+                return cached;
             }
 
-            if (!flying)
+            if (!oldBird.inFlyingMode)
             {
-                Renderer[] renderers = oldBird.GetComponentsInChildren<Renderer>(includeInactive: false);
-                bool any = false;
-                Bounds bounds = default;
-                for (int i = 0; i < renderers.Length; i++)
+                Bounds body = default;
+                bool hasBody = false;
+                foreach (SkinnedMeshRenderer renderer in oldBird.GetComponentsInChildren<SkinnedMeshRenderer>())
                 {
-                    Renderer r = renderers[i];
-                    if (r == null || !r.enabled || !(r is SkinnedMeshRenderer || r is MeshRenderer))
+                    if (renderer == null || !renderer.enabled || renderer.sharedMesh == null)
                     {
                         continue;
                     }
 
-                    if (!any)
+                    if (hasBody)
                     {
-                        bounds = r.bounds;
-                        any = true;
+                        body.Encapsulate(renderer.bounds);
                     }
                     else
                     {
-                        bounds.Encapsulate(r.bounds);
+                        body = renderer.bounds;
+                        hasBody = true;
                     }
                 }
 
-                if (any)
+                if (hasBody && body.size.y >= 2f)
                 {
-                    float h = Mathf.Clamp(bounds.size.y, 2f, 25f);
-                    if (h > cached)
-                    {
-                        cached = h;
-                    }
+                    _oldBirdHeights[id] = body.size.y;
+                    return body.size.y;
                 }
             }
 
-            if (cached <= 0f)
-            {
-                cached = 7f; // no usable renderer yet: conservative typical Old Bird height
-            }
-
-            _oldBirdHeights[id] = cached;
-            return cached;
+            return 9.8f; // Vanilla standing height if the body cannot be measured yet.
         }
 
         // ---------------------------- RPC ----------------------------
@@ -221,7 +226,15 @@ namespace MahoragaLC.AI
         [ClientRpc]
         public void SyncGrowthClientRpc(float targetScale, float transitionSeconds)
         {
-            _targetScale = Mathf.Clamp(targetScale, 1f, 3.5f);
+            if (!IsServer)
+            {
+                SetGrowthTarget(targetScale, transitionSeconds);
+            }
+        }
+
+        private void SetGrowthTarget(float targetScale, float transitionSeconds)
+        {
+            _targetScale = GrowthMath.SanitizeScale(targetScale);
             _growthTransitionSeconds = Mathf.Clamp(transitionSeconds, 0.2f, 10f);
         }
     }
