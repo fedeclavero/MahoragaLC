@@ -11,7 +11,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 65d3fcb39dd67306e9bb17a603308070, type: 3}
   m_Name: MahoragaEnemyType
-  m_EditorClassIdentifier: 
+  m_EditorClassIdentifier:
   enemyName: Mahoraga
   probabilityCurve:
     serializedVersion: 2
@@ -66,7 +66,7 @@ MonoBehaviour:
   useNumberSpawnedFalloff: 1
   spawnInGroupsOf: 0
   requireNestObjectsToSpawn: 0
-  enemyPrefab: {fileID: 4185676092101933274, guid: 408041b401bd9e9eb872f208b1ea8e9d,
+  enemyPrefab: {fileID: 2720913512738407634, guid: 408041b401bd9e9eb872f208b1ea8e9d,
     type: 3}
   PowerLevel: 3
   DiversityPowerLevel: 0

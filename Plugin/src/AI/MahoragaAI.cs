@@ -63,19 +63,21 @@ namespace MahoragaLC.AI
         private const float WheelSpinDuration = 0.80f;
         private const float InvestigateTimeout = 8.0f;
         private const float InvestigateArrivalPause = 1.5f;
-        private const float ChaseLosMemorySeconds = 10.0f;
+        private const float HearingMemorySeconds = 8f;
+        private const float TouchRange = 1f;
         private const float RoarCooldownSeconds = 12.0f;
         private const float LockedDoorForceDuration = 2.20f;
         private const float LockedDoorScanRange = 3.2f;
 
         private readonly MahoragaAdaptationSystem _adaptation = new MahoragaAdaptationSystem();
         private readonly Collider[] _doorOverlapBuffer = new Collider[8];
-        private readonly NavMeshPath _safePath = new NavMeshPath();
+        private NavMeshPath _safePath = null!;
         private readonly Vector3[] _safePathCorners = new Vector3[64];
 
         private float _baseAgentRadius;
 
         private MaterialPropertyBlock? _propBlock;
+        private int _wheelMaterialIndex = -1;
         private Quaternion _wheelRestLocalRotation = Quaternion.identity;
         private bool _hasWheelRestRotation;
         private float _wheelDisplayAngle;
@@ -102,11 +104,12 @@ namespace MahoragaLC.AI
         private bool _investigateArrived;
 
         private Vector3 _lastKnownTargetPos;
-        private float _losLostTimer;
+        private float _lastPlayerContactTime;
+        private Vector3 _lastAudiblePosition;
+        private float _lastAudibleTime = float.NegativeInfinity;
         private float _roarCooldownTimer;
         private float _attackCooldownTimer;
         private float _deflectRpcCooldownTimer;
-        private float _lastHitFromExplosionTime = -999f;
 
         private bool _currentAttackIsSlam;
         private float _attackElapsed;
@@ -136,27 +139,19 @@ namespace MahoragaLC.AI
         public override void Start()
         {
             base.Start();
+            _safePath = new NavMeshPath();
 
             EnsureBehaviourStatesArray();
             ResolvePrefabReferences();
             CacheWheelRestRotation();
 
-            if (agent != null)
-            {
-                agent.autoTraverseOffMeshLink = false;
-            }
-
-            // Fallback only for wrong-domain manual/Imperium spawns: natural outdoor spawns via
-            // MahoragaPrefab_Outside already enter Start() with isOutside == true.
+            // Manual spawns can use either prefab; apply the jump mask after the domain is set.
             bool spawnedOutside = HuntLogic.IsOutsideAt(transform.position.y, isOutside);
             if (isOutside != spawnedOutside)
             {
                 SetEnemyOutside(spawnedOutside);
-                if (agent != null)
-                {
-                    agent.autoTraverseOffMeshLink = false;
-                }
             }
+            ConfigureTraversal();
 
             _baseAgentRadius = agent != null ? agent.radius : (isOutside ? 0.85f : 0.55f);
             SyncBestiaryScanNodeId();
@@ -248,6 +243,15 @@ namespace MahoragaLC.AI
                 return false;
             }
 
+            if (TryBoardOpenShipServer(rawTarget))
+            {
+                return true;
+            }
+            if (TryGetShipApproachPoint(rawTarget, out Vector3 approach))
+            {
+                rawTarget = approach;
+                sampleRadius = 0.75f;
+            }
             float radius = Mathf.Max(0.5f, sampleRadius);
             int areaMask = agent.areaMask != 0 ? agent.areaMask : agentMask;
             if (!NavMesh.SamplePosition(rawTarget, out NavMeshHit hit, radius, areaMask))
@@ -274,6 +278,12 @@ namespace MahoragaLC.AI
                 if (cornerCount > 0)
                 {
                     Vector3 lastCorner = _safePathCorners[cornerCount - 1];
+                    if ((lastCorner - transform.position).sqrMagnitude < 0.95f * 0.95f &&
+                        TryBeginJumpServer(transform.position, hit.position, useLink: false))
+                    {
+                        return true;
+                    }
+
                     if ((lastCorner - transform.position).sqrMagnitude > 0.4f * 0.4f)
                     {
                         moveTowardsDestination = true;
@@ -348,37 +358,6 @@ namespace MahoragaLC.AI
             }
         }
 
-        private void GuardOffMeshLinkServer()
-        {
-            if (!IsServer || agent == null || !agent.enabled || !agent.isOnNavMesh || !agent.isOnOffMeshLink)
-            {
-                return;
-            }
-
-            OffMeshLinkData link = agent.currentOffMeshLinkData;
-            Vector3 startPos = link.startPos;
-            Vector3 endPos = link.endPos;
-
-            bool blocked = false;
-            if (StartOfRound.Instance != null)
-            {
-                int mask = StartOfRound.Instance.collidersAndRoomMaskAndDefault;
-                blocked = Physics.Linecast(startPos + Vector3.up * 0.9f, endPos + Vector3.up * 0.9f, mask, QueryTriggerInteraction.Ignore)
-                    || Physics.Linecast(startPos + Vector3.up * 2.2f, endPos + Vector3.up * 2.2f, mask, QueryTriggerInteraction.Ignore);
-            }
-
-            if (blocked)
-            {
-                agent.Warp(startPos);
-                agent.CompleteOffMeshLink();
-                agent.ResetPath();
-            }
-            else
-            {
-                agent.CompleteOffMeshLink();
-            }
-        }
-
         private void ResolvePrefabReferences()
         {
             if (audioController == null)
@@ -389,6 +368,19 @@ namespace MahoragaLC.AI
             if (mainRenderer == null)
             {
                 mainRenderer = GetComponentInChildren<SkinnedMeshRenderer>(includeInactive: true);
+            }
+
+            if (mainRenderer != null)
+            {
+                Material[] materials = mainRenderer.sharedMaterials;
+                for (int i = 0; i < materials.Length; i++)
+                {
+                    if (materials[i] != null && materials[i].name == "Mahoraga_Wheel_Mat")
+                    {
+                        _wheelMaterialIndex = i;
+                        break;
+                    }
+                }
             }
 
             if (wheelBone == null)
@@ -445,6 +437,11 @@ namespace MahoragaLC.AI
             base.Update();
 
             float dt = Time.deltaTime;
+            if (IsServer)
+            {
+                TickJumpServer(dt);
+                TickShipDeckServer();
+            }
             if (_clientContactCooldown > 0f)
             {
                 _clientContactCooldown -= dt;
@@ -476,7 +473,7 @@ namespace MahoragaLC.AI
                 TickPendingOldBirdDestructions(Time.time);
             }
 
-            if (!IsServer || isEnemyDead)
+            if (!IsServer || isEnemyDead || _jumping)
             {
                 return;
             }
@@ -542,7 +539,7 @@ namespace MahoragaLC.AI
 
             if (!isEnemyDead && !isStunned && !summonOrSubmerge && currentBehaviourStateIndex != (int)MahoragaState.Adapting)
             {
-                if (_smoothedHorizontalSpeed > 0.35f)
+                if (Time.time >= _stopStridesUntil && _smoothedHorizontalSpeed > 0.35f)
                 {
                     audioController?.TickStrideFootsteps(horizDist, isChasing);
                 }
@@ -616,9 +613,19 @@ namespace MahoragaLC.AI
         {
             if (mainRenderer != null && _propBlock != null)
             {
-                mainRenderer.GetPropertyBlock(_propBlock);
-                _propBlock.SetColor(EmissiveColorId, BaseGoldColor * emissiveIntensity);
-                mainRenderer.SetPropertyBlock(_propBlock);
+                if (_wheelMaterialIndex >= 0)
+                {
+                    mainRenderer.GetPropertyBlock(_propBlock, _wheelMaterialIndex);
+                    _propBlock.SetColor(EmissiveColorId, BaseGoldColor * emissiveIntensity);
+                    mainRenderer.SetPropertyBlock(_propBlock, _wheelMaterialIndex);
+                }
+                else
+                {
+                    // Old bundles had one material and no body light floor.
+                    mainRenderer.GetPropertyBlock(_propBlock);
+                    _propBlock.SetColor(EmissiveColorId, BaseGoldColor * emissiveIntensity);
+                    mainRenderer.SetPropertyBlock(_propBlock);
+                }
             }
 
             if (wheelGlowLight != null)
@@ -641,7 +648,6 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            GuardOffMeshLinkServer();
             TickCombatServer(dt);
 
             if (_roarCooldownTimer > 0f)
@@ -749,7 +755,15 @@ namespace MahoragaLC.AI
                 return;
             }
 
+            if (_jumping || _onShipDeck)
+            {
+                return;
+            }
             GuardOffMeshLinkServer();
+            if (_jumping)
+            {
+                return;
+            }
             base.DoAIInterval();
 
             if (currentBehaviourStateIndex == (int)MahoragaState.Adapting ||
@@ -823,24 +837,14 @@ namespace MahoragaLC.AI
             }
             openDoorSpeedMultiplier = 0.85f;
 
-            float patrolSightRange = isOutside ? 36f : 26f;
-            PlayerControllerB? spotted = FindBestVisibleOrNearbyPlayer(viewHalfAngle: 65f, sightRange: patrolSightRange, proximityRadius: 4.0f);
-            if (spotted != null)
+            PlayerControllerB? nearby = FindNearbyPlayer();
+            if (nearby != null)
             {
-                RecordPlayerSightServer();
-                EnterChaseStateServer(spotted);
+                EnterChaseStateServer(nearby);
                 return;
             }
 
-            // Late-game Shadow Dive & Ambush Re-Summon when no player has been seen for a while.
-            if (TryEvaluateShadowAmbushServer(cfg))
-            {
-                return;
-            }
-
-            // Indoors (or outdoors only when HuntPlayersOutdoors is opted in): hunt closest reachable player.
-            // Outdoors defaults to realistic wandering + LOS/hearing only.
-            if (TryRunHuntServer(cfg))
+            if (TryPatrolGapServer() || TryEvaluateShadowAmbushServer(cfg))
             {
                 return;
             }
@@ -861,12 +865,10 @@ namespace MahoragaLC.AI
             }
             openDoorSpeedMultiplier = 1.1f;
 
-            float investigateSightRange = isOutside ? 38f : 30f;
-            PlayerControllerB? spotted = FindBestVisibleOrNearbyPlayer(viewHalfAngle: 65f, sightRange: investigateSightRange, proximityRadius: 5.0f);
-            if (spotted != null)
+            PlayerControllerB? nearby = FindNearbyPlayer();
+            if (nearby != null)
             {
-                RecordPlayerSightServer();
-                EnterChaseStateServer(spotted);
+                EnterChaseStateServer(nearby);
                 return;
             }
 
@@ -916,76 +918,36 @@ namespace MahoragaLC.AI
 
             if (targetPlayer == null || !PlayerIsTargetable(targetPlayer))
             {
-                PlayerControllerB? replacement = FindBestVisibleOrNearbyPlayer(viewHalfAngle: 90f, sightRange: isOutside ? 40f : 30f, proximityRadius: 6.0f);
-                if (replacement != null)
-                {
-                    SetChaseTargetServer(replacement);
-                }
-                else
-                {
-                    EnterPatrolStateServer();
-                    return;
-                }
+                EnterInvestigateStateServer(_lastKnownTargetPos);
+                return;
             }
 
-            // Retaliation: the player who is hurting us the most wins (with hysteresis, see AggroTable).
             TryRetaliationRetargetServer(cfg);
 
-            // Target switching: pivot if another visible player is strictly < 65% of current target distance
-            // (never away from a player who is actively attacking us).
-            float currentDist = Vector3.Distance(transform.position, targetPlayer!.transform.position);
-            PlayerControllerB? closerCandidate = CurrentTargetIsAggressor() ? null : FindCloserVisiblePlayer(targetPlayer, currentDist * 0.65f);
-            if (closerCandidate != null)
+            PlayerControllerB player = targetPlayer!;
+            bool inContact = CanSenseByProximity(player);
+            if (inContact)
             {
-                SetChaseTargetServer(closerCandidate);
-                currentDist = Vector3.Distance(transform.position, targetPlayer.transform.position);
+                RememberPlayerContact(player.transform.position);
             }
 
-            float chaseLosRange = isOutside ? 48f : 35f;
-            bool realisticOutdoor = isOutside && (cfg == null || !cfg.HuntPlayersOutdoors.Value);
-            bool hasLos = HasLineOfSightToPlayer(targetPlayer, chaseLosRange);
-
-            if (hasLos)
+            float sinceContact = Time.time - _lastPlayerContactTime;
+            if (sinceContact >= HearingMemorySeconds ||
+                (sinceContact > 0.8f && Vector3.Distance(transform.position, _lastKnownTargetPos) < 0.85f) ||
+                !SetSafeDestinationServer(_lastKnownTargetPos, 1.5f))
             {
-                _lastKnownTargetPos = targetPlayer.transform.position;
-                _losLostTimer = 0f;
-                RecordPlayerSightServer();
-                SetMovingTowardsTargetPlayer(targetPlayer);
-                moveTowardsDestination = true;
-            }
-            else
-            {
-                _losLostTimer += AIIntervalTime;
-                if (realisticOutdoor)
-                {
-                    // Realistic outdoor perception: pursue only the last seen position (no wallhack) and return to Patrolling on loss.
-                    bool reachedLastSeen = _losLostTimer >= 1.0f && Vector3.Distance(transform.position, _lastKnownTargetPos) <= 2.4f;
-                    if (_losLostTimer >= ChaseLosMemorySeconds || reachedLastSeen || !SetSafeDestinationServer(_lastKnownTargetPos, 4f))
-                    {
-                        EnterPatrolStateServer();
-                        return;
-                    }
-                }
-                else
-                {
-                    if (_losLostTimer >= ChaseLosMemorySeconds)
-                    {
-                        EnterInvestigateStateServer(_lastKnownTargetPos);
-                        return;
-                    }
-
-                    SetMovingTowardsTargetPlayer(targetPlayer);
-                    moveTowardsDestination = true;
-                }
+                EnterInvestigateStateServer(_lastKnownTargetPos);
+                return;
             }
 
-            if (TryScanForLockedDoorServer(cfg))
+            if (_jumping || TryScanForLockedDoorServer(cfg))
             {
                 return;
             }
 
             // Attack range evaluation (including railing/ledge Divergent Slam punish; requires clear strike path so never swings into walls).
-            if (_attackCooldownTimer <= 0f)
+            if (_attackCooldownTimer <= 0f && (inContact || (sinceContact < 0.8f &&
+                (player.transform.position - _lastKnownTargetPos).sqrMagnitude < 1f)))
             {
                 Vector3 toTarget = targetPlayer.transform.position - transform.position;
                 float horizDist = new Vector2(toTarget.x, toTarget.z).magnitude;
@@ -1062,7 +1024,6 @@ namespace MahoragaLC.AI
             _forcingDoor = null;
             targetPlayer = null;
             movingTowardsTargetPlayer = false;
-            _losLostTimer = 0f;
 
             SwitchBehaviourAndSyncServer(MahoragaState.Patrolling, -1);
             StartSearch(transform.position);
@@ -1089,31 +1050,29 @@ namespace MahoragaLC.AI
             }
         }
 
-        private void EnterChaseStateServer(PlayerControllerB player)
+        private void EnterChaseStateServer(PlayerControllerB player, Vector3? contactPosition = null)
         {
             _forcingDoor = null;
             StopSearch(currentSearch);
             targetPlayer = player;
-            _lastKnownTargetPos = player.transform.position;
-            _losLostTimer = 0f;
+            RememberPlayerContact(contactPosition ?? player.transform.position);
             setDestinationToPlayerInterval = 0f;
             moveTowardsDestination = true;
-            RecordPlayerSightServer();
+            RecordPlayerContactServer();
 
             SwitchBehaviourAndSyncServer(MahoragaState.Chasing, (int)player.playerClientId);
-            SetMovingTowardsTargetPlayer(player);
+            SetSafeDestinationServer(_lastKnownTargetPos, 1.5f);
         }
 
         private void SetChaseTargetServer(PlayerControllerB player)
         {
             targetPlayer = player;
-            _lastKnownTargetPos = player.transform.position;
-            _losLostTimer = 0f;
+            RememberPlayerContact(player.transform.position);
             setDestinationToPlayerInterval = 0f;
             moveTowardsDestination = true;
-            RecordPlayerSightServer();
+            RecordPlayerContactServer();
             SyncBehaviourStateClientRpc((int)MahoragaState.Chasing, (int)player.playerClientId, playRoar: false);
-            SetMovingTowardsTargetPlayer(player);
+            SetSafeDestinationServer(_lastKnownTargetPos, 1.5f);
         }
 
         private void EnterAttackStateServer(bool isSlam, EnemyAI? enemyTarget = null)
@@ -1152,8 +1111,7 @@ namespace MahoragaLC.AI
                 }
                 else if (targetPlayer != null && PlayerIsTargetable(targetPlayer))
                 {
-                    RecordPlayerSightServer();
-                    FacePositionSmooth(targetPlayer.transform.position, 9f, dt);
+                    FacePositionSmooth(_lastKnownTargetPos, 9f, dt);
                 }
             }
 
@@ -1185,7 +1143,7 @@ namespace MahoragaLC.AI
                 }
                 else
                 {
-                    PlayerControllerB? next = FindBestVisibleOrNearbyPlayer(viewHalfAngle: 120f, sightRange: 26f, proximityRadius: 6.0f);
+                    PlayerControllerB? next = FindNearbyPlayer();
                     if (next != null)
                     {
                         EnterChaseStateServer(next);
@@ -1427,7 +1385,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            PlayerControllerB? spotted = FindBestVisibleOrNearbyPlayer(viewHalfAngle: 120f, sightRange: 30f, proximityRadius: 8.0f);
+            PlayerControllerB? spotted = FindNearbyPlayer();
             if (spotted != null)
             {
                 EnterChaseStateServer(spotted);
@@ -1440,30 +1398,57 @@ namespace MahoragaLC.AI
 
         public override void DetectNoise(Vector3 noisePosition, float noiseLoudness, int timesPlayedInOneSpot = 0, int noiseID = 0)
         {
-            if (!IsServer || isEnemyDead || IsSummonOrSubmergeActive)
+            if (!IsServer || isEnemyDead || _jumping || _onShipDeck || IsSummonOrSubmergeActive || stunNormalizedTimer > 0f ||
+                stunnedIndefinitely > 0 || StartOfRound.Instance == null || timesPlayedInOneSpot > 15 ||
+                noiseID == 675189 || noiseID == 546 || (noisePosition - transform.position).sqrMagnitude < 0.04f ||
+                HuntLogic.IsOutsideAt(noisePosition.y, isOutside) != isOutside)
             {
                 return;
             }
 
-            if (currentBehaviourStateIndex != (int)MahoragaState.Patrolling &&
-                currentBehaviourStateIndex != (int)MahoragaState.Investigating)
+            PlayerControllerB? source = PlayerFootstepPatch.Source;
+            if (source != null && (source.isCrouching || !PlayerIsTargetable(source)))
             {
                 return;
             }
 
-            bool noiseOutside = HuntLogic.IsOutsideAt(noisePosition.y, isOutside);
-            if (noiseOutside != isOutside)
+            int mask = StartOfRound.Instance.collidersAndRoomMaskAndDefault;
+            if (Physics.Linecast(transform.position + Vector3.up * 0.8f, noisePosition + Vector3.up * 0.8f,
+                mask, QueryTriggerInteraction.Ignore))
+            {
+                noiseLoudness *= 0.5f;
+            }
+
+            float range = noiseLoudness * 18f;
+            if (noiseLoudness < 0.25f || (noisePosition - transform.position).sqrMagnitude > range * range)
             {
                 return;
             }
 
-            float maxHearingDist = 24.0f * Mathf.Clamp(noiseLoudness, 0.5f, 1.5f);
-            if (Vector3.Distance(transform.position, noisePosition) > maxHearingDist)
+            _lastAudiblePosition = noisePosition;
+            _lastAudibleTime = Time.time;
+            if (source != null && targetPlayer == source)
             {
-                return;
+                RememberPlayerContact(noisePosition);
             }
 
-            EnterInvestigateStateServer(noisePosition);
+            if (currentBehaviourStateIndex == (int)MahoragaState.Patrolling ||
+                currentBehaviourStateIndex == (int)MahoragaState.Investigating)
+            {
+                if (source != null)
+                {
+                    EnterChaseStateServer(source, noisePosition);
+                }
+                else if (!_investigateArrived && currentBehaviourStateIndex == (int)MahoragaState.Investigating &&
+                         (_investigatePos - noisePosition).sqrMagnitude < 0.75f * 0.75f)
+                {
+                    _investigateTimer = InvestigateTimeout;
+                }
+                else
+                {
+                    EnterInvestigateStateServer(noisePosition);
+                }
+            }
         }
 
         public override void HitEnemy(int force = 1, PlayerControllerB? playerWhoHit = null, bool playHitSFX = false, int hitID = -1)
@@ -1486,127 +1471,10 @@ namespace MahoragaLC.AI
             HandleDamageServer(force, playerWhoHit, playHitSFX, hitID);
         }
 
-        public override void HitFromExplosion(float distance)
-        {
-            if (IsSummonInvulnerable)
-            {
-                return;
-            }
-
-            base.HitFromExplosion(distance);
-            if (!IsServer || isEnemyDead)
-            {
-                return;
-            }
-
-            float now = Time.time;
-            _lastHitFromExplosionTime = now;
-
-            // Landmine.SpawnExplosion calls HitEnemyOnLocalClient(6) immediately before HitFromExplosion(distance).
-            // Skip if HitEnemy already processed this blast within 0.15s.
-            if (_adaptation.IsDuplicateExplosion(now))
-            {
-                return;
-            }
-
-            // Note: If Landmine's HitEnemyServerRpc executes on the same tick immediately after HitFromExplosion,
-            // recording _lastHitFromExplosionTime guarantees HitEnemy classifies it deterministically as Explosion
-            // without double-applying damage or exposure here.
-        }
-
-        public override void SetEnemyStunned(bool setToStunned, float setToStunTime = 1f, PlayerControllerB? setStunnedByPlayer = null)
-        {
-            if (isEnemyDead)
-            {
-                return;
-            }
-
-            if (!setToStunned)
-            {
-                base.SetEnemyStunned(false, setToStunTime, setStunnedByPlayer);
-                return;
-            }
-
-            // Invulnerable while being summoned or submerging: stuns are negated.
-            if (IsSummonInvulnerable)
-            {
-                stunNormalizedTimer = -1f;
-                stunnedIndefinitely = 0;
-                return;
-            }
-
-            bool isZapGun = setStunnedByPlayer != null && setStunnedByPlayer.currentlyHeldObjectServer is PatcherTool;
-            AdaptationCategory category = MahoragaAdaptationSystem.ClassifyStun(isZapGun);
-
-            // Immediate stun negation on all clients when adapted or mid-adaptation.
-            if (currentBehaviourStateIndex == (int)MahoragaState.Adapting || _adaptation.IsAdapted(category))
-            {
-                stunNormalizedTimer = -1f;
-                stunnedIndefinitely = 0;
-
-                if (IsServer && _deflectRpcCooldownTimer <= 0f)
-                {
-                    _deflectRpcCooldownTimer = 0.80f;
-                    PlayDeflectFeedbackClientRpc((byte)category);
-                }
-                return;
-            }
-
-            float stunTime = setToStunTime;
-            if (IsServer)
-            {
-                MahoragaConfig? cfg = MahoragaConfig.Current;
-                int maxHp = cfg != null ? cfg.MaxHP.Value : 18;
-                AdaptationSettings settings = cfg != null ? cfg.Adaptation : _fallbackAdaptation;
-
-                StunEvaluation eval = _adaptation.EvaluateStun(
-                    category,
-                    enemyHP,
-                    maxHp,
-                    isCurrentlyAdapting: false,
-                    settings,
-                    Time.time);
-
-                if (setStunnedByPlayer != null && PlayerIsTargetable(setStunnedByPlayer))
-                {
-                    RegisterPlayerAggression(setStunnedByPlayer, 2, Time.time);
-                }
-
-                if (eval.TriggeredAdaptation)
-                {
-                    stunNormalizedTimer = -1f;
-                    stunnedIndefinitely = 0;
-
-                    if (setStunnedByPlayer != null && PlayerIsTargetable(setStunnedByPlayer))
-                    {
-                        targetPlayer = setStunnedByPlayer;
-                    }
-
-                    EnterAdaptationStateServer(category, eval.FinalHP);
-                    return;
-                }
-
-                if (eval.TriggeredWheelClick)
-                {
-                    TriggerWheelClickClientRpc((byte)category, (byte)eval.StageAfter, _adaptation.AdaptedMask, _adaptation.WheelStepCount, enemyHP, playSpinAnim: false);
-                }
-
-                // Partially adapted: the stun is shorter (and ignored when it would last a blink).
-                stunTime = setToStunTime * eval.StunTimeMultiplier;
-                if (eval.StunTimeMultiplier < 0.05f)
-                {
-                    stunNormalizedTimer = -1f;
-                    return;
-                }
-            }
-
-            base.SetEnemyStunned(true, stunTime, setStunnedByPlayer);
-        }
-
         public override void OnCollideWithPlayer(Collider other)
         {
             base.OnCollideWithPlayer(other);
-            if (_clientContactCooldown > 0f || isEnemyDead)
+            if (_clientContactCooldown > 0f || isEnemyDead || _jumping)
             {
                 return;
             }
@@ -1708,111 +1576,45 @@ namespace MahoragaLC.AI
             SyncBehaviourStateClientRpc(stateIdx, targetPlayerClientId, playRoar);
         }
 
-        private PlayerControllerB? FindBestVisibleOrNearbyPlayer(float viewHalfAngle, float sightRange, float proximityRadius)
+        private PlayerControllerB? FindNearbyPlayer()
         {
             if (StartOfRound.Instance == null)
             {
                 return null;
             }
 
-            Transform eyeTransform = eye != null ? eye : transform;
-            Vector3 eyePos = eyeTransform.position;
-            Vector3 eyeForward = eyeTransform.forward;
-
-            PlayerControllerB? best = null;
-            float bestDist = float.MaxValue;
-
-            PlayerControllerB[] players = StartOfRound.Instance.allPlayerScripts;
-            for (int i = 0; i < players.Length; i++)
+            PlayerControllerB? nearest = null;
+            float nearestDistance = TouchRange * TouchRange;
+            foreach (PlayerControllerB player in StartOfRound.Instance.allPlayerScripts)
             {
-                PlayerControllerB p = players[i];
-                if (p == null || !PlayerIsTargetable(p))
+                if (player == null || !CanSenseByProximity(player))
                 {
                     continue;
                 }
 
-                Vector3 camPos = p.gameplayCamera != null
-                    ? p.gameplayCamera.transform.position
-                    : p.transform.position + Vector3.up * 2.2f;
-
-                float dist = Vector3.Distance(eyePos, camPos);
-                if (dist > sightRange)
+                float distance = (player.transform.position - transform.position).sqrMagnitude;
+                if (distance <= nearestDistance)
                 {
-                    continue;
-                }
-
-                Vector3 toCam = camPos - eyePos;
-                bool inCone = Vector3.Angle(eyeForward, toCam) <= viewHalfAngle;
-                bool inProximity = Vector3.Distance(transform.position, p.transform.position) <= proximityRadius;
-                if (!inCone && !inProximity)
-                {
-                    continue;
-                }
-
-                if (Physics.Linecast(eyePos, camPos, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore))
-                {
-                    continue;
-                }
-
-                if (dist < bestDist)
-                {
-                    bestDist = dist;
-                    best = p;
+                    nearestDistance = distance;
+                    nearest = player;
                 }
             }
-
-            return best;
+            return nearest;
         }
 
-        private PlayerControllerB? FindCloserVisiblePlayer(PlayerControllerB currentTarget, float maxDist)
+        private bool CanSenseByProximity(PlayerControllerB player)
         {
-            if (StartOfRound.Instance == null)
-            {
-                return null;
-            }
-
-            PlayerControllerB? best = null;
-            float bestDist = maxDist;
-            PlayerControllerB[] players = StartOfRound.Instance.allPlayerScripts;
-
-            for (int i = 0; i < players.Length; i++)
-            {
-                PlayerControllerB p = players[i];
-                if (p == null || p == currentTarget || !PlayerIsTargetable(p))
-                {
-                    continue;
-                }
-
-                float d = Vector3.Distance(transform.position, p.transform.position);
-                if (d < bestDist && HasLineOfSightToPlayer(p, maxDist + 2f))
-                {
-                    bestDist = d;
-                    best = p;
-                }
-            }
-
-            return best;
+            return (player.transform.position - transform.position).sqrMagnitude <= TouchRange * TouchRange &&
+                PlayerIsTargetable(player) && HasClearStrikePathToPlayer(player);
         }
 
-        private bool HasLineOfSightToPlayer(PlayerControllerB player, float maxRange)
+        private void RememberPlayerContact(Vector3 position)
         {
-            if (StartOfRound.Instance == null || player == null)
-            {
-                return false;
-            }
-
-            Vector3 eyePos = eye != null ? eye.position : transform.position + Vector3.up * 3.3f;
-            Vector3 targetPos = player.gameplayCamera != null
-                ? player.gameplayCamera.transform.position
-                : player.transform.position + Vector3.up * 2.2f;
-
-            if (Vector3.Distance(eyePos, targetPos) > maxRange)
-            {
-                return false;
-            }
-
-            return !Physics.Linecast(eyePos, targetPos, StartOfRound.Instance.collidersAndRoomMaskAndDefault, QueryTriggerInteraction.Ignore);
+            _lastKnownTargetPos = position;
+            _lastPlayerContactTime = Time.time;
         }
+
+
 
         private void FacePositionSmooth(Vector3 worldPos, float turnRate, float dt)
         {
@@ -2089,7 +1891,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            if (Vector3.Distance(transform.position, player.transform.position) > 3.5f * ScaleFactor)
+            if (!CanSenseByProximity(player))
             {
                 return;
             }
@@ -2100,7 +1902,7 @@ namespace MahoragaLC.AI
             }
 
             targetPlayer = player;
-            RecordPlayerSightServer();
+            RememberPlayerContact(player.transform.position);
             if (_attackCooldownTimer <= 0f)
             {
                 bool useSlam = ShouldUseSlamAttack(forceSlam: false);
@@ -2141,6 +1943,10 @@ namespace MahoragaLC.AI
             // Late join / late spawn while summoning or submerging: resume at the right moment.
             SendSummonSyncIfActive(targetParams);
             SendSubmergeSyncIfActive(targetParams);
+            if (stunNormalizedTimer > 0f)
+            {
+                SyncTimedStunClientRpc(stunNormalizedTimer, targetParams);
+            }
         }
 
         [ClientRpc]

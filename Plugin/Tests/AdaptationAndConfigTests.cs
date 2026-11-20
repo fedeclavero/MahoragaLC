@@ -18,22 +18,21 @@ internal static class Program
         Run("Adapting stance grants 75% bracing armor and prevents double adaptation overlap", TestAdaptingArmor);
         Run("Explosion deduplication window (0.15s)", TestExplosionDedup);
         Run("ZapGun continuous-beam debounce (3.0s) & fresh engagement gap (1.5s)", TestZapGunDebounce);
-        Run("StunGrenade adaptation negates subsequent flashes", TestStunGrenadeAdaptation);
+        Run("Two full stuns, then half duration, independently for each source", TestStunGrenadeAdaptation);
+        Run("Four distinct shovel users coordinate, with extra blows after adaptation", TestCoordinatedShovels);
+        Run("Shovel and shotgun adaptation are independent", TestShovelIndependence);
         Run("MoonRarityParser parses vanilla, modded, whitespace, and malformed entries", TestMoonRarityParser);
         Run("Summon timeline: rise, pool, wheel, droplets, finish", SummonAndHuntTests.TestTimelineReference);
         Run("Summon timeline: scales with duration and clamps bad values", SummonAndHuntTests.TestTimelineScalingAndClamp);
         Run("Hunt: inside/outside classification with hysteresis (game thresholds)", SummonAndHuntTests.TestDomainHysteresis);
-        Run("Hunt: candidate ordering skips blocked players", SummonAndHuntTests.TestCandidateOrdering);
-        Run("Hunt: stuck detection", SummonAndHuntTests.TestStuckDetection);
         Run("New categories: Old Bird missile, enemy melee, vehicle force no longer Shotgun", TestNewCategoryClassification);
         Run("Progressive adaptation: 0 -> 40 -> 70 -> 95 %, wheel clicks, heal only at the final stage", TestProgressiveAdaptation);
         Run("Progressive adaptation: HitsPerStage=2 stretches each stage and keeps categories independent", TestHitsPerStage);
         Run("Progressive adaptation: lethal blow mid-ramp never advances the Wheel", TestLethalMidRamp);
         Run("Adapting stance does not advance stages and stays armored", TestAdaptingDoesNotAdvance);
-        Run("Progressive stun adaptation: shorter stuns, then negation + heal (grenade)", TestProgressiveStun);
         Run("Zap Gun anti-spam still holds with stages (wheel clicks only on real exposures)", TestZapAntiSpamWithStages);
         Run("HP floor clips damage but never heals", TestHpFloor);
-        Run("Single Old Bird can never kill Mahoraga; a flock of 5 can", TestOldBirdBalance);
+        Run("Single Old Bird can never kill Mahoraga; a flock of 3 can before adaptation", TestOldBirdBalance);
         Run("Regeneration waits for quiet, accumulates fractions, never overheals", TestRegeneration);
         Run("AggroTable decay, top selection and switch hysteresis (no oscillation)", TestAggroHysteresis);
         Run("CooldownSet blocks then expires", TestCooldownSet);
@@ -41,7 +40,6 @@ internal static class Program
         Run("DistinctAttackerWindow counts different attackers inside the window", TestDistinctAttackers);
         Run("GrowthMath: match scale, steps, cap, indoor reset, approach", TestGrowthMath);
         Run("Old Bird durability and knockback maths", TestDurabilityAndKnockback);
-        Run("Hunt: realistic outdoor perception (ShouldHuntWithoutLineOfSight)", SummonAndHuntTests.TestOutdoorPerception);
         Run("Old Bird #1 priority (EvaluateOldBird), AdvanceWheelStep post-stage-3, and +45 deg Wheel progression (0..360)", TestOldBirdEngagementAndWheelProgression);
         Run("ShadowAmbush: CanTriggerAmbush gates (toggle, time, lost sight, cooldown, Old Bird priority, AI state)", SummonAndHuntTests.TestShadowAmbushGating);
         Run("Submerge timeline: sink 0 -> -4.4m, tint fade 1.0 -> 0.06, pool timing, scaling", SummonAndHuntTests.TestSubmergeTimeline);
@@ -92,7 +90,7 @@ internal static class Program
         // Explosion via Harmony tracker
         Assert(MahoragaAdaptationSystem.ClassifyDamage(-1, 3, true, false, false, true) == AdaptationCategory.Explosion, "Tracked explosion nearby must classify as Explosion");
         // Cruiser / Modded catch-all
-        Assert(MahoragaAdaptationSystem.ClassifyDamage(331, 2, true, false, false, false) == AdaptationCategory.Other, "Cruiser hitID=331 must classify as Other");
+        Assert(MahoragaAdaptationSystem.ClassifyDamage(331, 2, true, false, false, false) == AdaptationCategory.VehicleImpact, "Cruiser hitID=331 must use the vehicle phenomenon");
         // Stuns
         Assert(MahoragaAdaptationSystem.ClassifyStun(true) == AdaptationCategory.ZapGun, "PatcherTool must classify as ZapGun");
         Assert(MahoragaAdaptationSystem.ClassifyStun(false) == AdaptationCategory.StunGrenade, "Flashbang must classify as StunGrenade");
@@ -203,13 +201,51 @@ internal static class Program
 
     private static void TestStunGrenadeAdaptation()
     {
-        var sys = new MahoragaAdaptationSystem();
-        var f1 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 15, 18, false, Legacy(2, 0.95f, 0.20f), now: 1f);
-        Assert(!f1.Negated && !f1.TriggeredAdaptation, "1st flashbang stuns normally");
-        var f2 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 15, 18, false, Legacy(2, 0.95f, 0.20f), now: 6f);
-        Assert(f2.Negated && f2.TriggeredAdaptation && f2.FinalHP == 18 && sys.IsAdapted(AdaptationCategory.StunGrenade), "2nd flashbang adapts & heals");
-        var f3 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 18, 18, false, Legacy(2, 0.95f, 0.20f), now: 12f);
-        Assert(f3.Negated && f3.WasAlreadyAdapted, "3rd flashbang is 100% negated");
+        var stuns = new TimedStunExposure();
+        Type grenade = typeof(int);
+        Type otherWeapon = typeof(string);
+        Assert(stuns.Register(grenade, out bool first) == 1f && !first, "first grenade stuns fully");
+        Assert(stuns.Register(grenade, out bool second) == 1f && !second, "second grenade stuns fully");
+        Assert(stuns.Register(grenade, out bool third) == 0.5f && third, "third grenade stuns half as long and turns the wheel");
+        Assert(stuns.Register(otherWeapon, out bool other) == 1f && !other, "a different weapon has its own exposures");
+        Assert(stuns.Register(grenade, out bool later) == 0.5f && !later, "later grenades still stun");
+    }
+
+    private static void TestCoordinatedShovels()
+    {
+        var combo = new CoordinatedShovelStrike();
+        Assert(!combo.Register(1, 10f, 0), "one player is insufficient");
+        Assert(!combo.Register(1, 10.4f, 1), "repeated player does not fill the opening");
+        Assert(!combo.Register(2, 10.5f, 1), "two players are insufficient");
+        Assert(!combo.Register(3, 10.6f, 2), "three players are insufficient");
+        Assert(combo.Register(4, 10.7f, 3), "four players qualify at the opening stage");
+
+        combo.Clear();
+        for (ulong player = 1; player <= 4; player++)
+        {
+            Assert(!combo.Register(player, 11f + player * 0.1f, 1), "adapted boss survives the opening");
+        }
+        Assert(!combo.Register(4, 11.5f, 1), "rapid duplicate cannot count as another swing");
+        Assert(combo.Register(4, 12.1f, 1), "one of the same four can land the extra blow");
+
+        combo.Clear();
+        Assert(!combo.Register(1, 13f, 0) && !combo.Register(2, 13.8f, 0) &&
+            !combo.Register(3, 13.9f, 0) && !combo.Register(4, 14f, 0), "slow opening is not a coordinated strike");
+    }
+
+    private static void TestShovelIndependence()
+    {
+        var system = new MahoragaAdaptationSystem();
+        var settings = AdaptationSettings.CreateProgressive();
+        system.EvaluateDamage(AdaptationCategory.Shotgun, 2, 18, 18, false, settings, 1f);
+        Assert(system.GetStage(AdaptationCategory.Shotgun) == 1 && system.GetStage(AdaptationCategory.Shovel) == 0,
+            "gunfire cannot increase the shovel requirement");
+        Assert(MahoragaAdaptationSystem.ClassifyDamage(331, 2, true, false, false, false) ==
+            AdaptationCategory.VehicleImpact, "verified Cruiser hit ID uses its own phenomenon");
+        var custom = (AdaptationCategory)MahoragaAdaptationSystem.FirstCustomWeaponCategory;
+        system.EvaluateDamage(custom, 1, 18, 18, false, settings, 2f);
+        Assert(system.GetStage(custom) == 1 && system.GetStage(AdaptationCategory.Other) == 0,
+            "an identified mod weapon has its own resistance");
     }
 
     private static void TestMoonRarityParser()
@@ -241,7 +277,7 @@ internal static class Program
         // A shovel swing during somebody else's blast keeps Melee; a Cruiser hit (force 12, attacker) is Other, not Shotgun.
         Assert(MahoragaAdaptationSystem.ClassifyDamage(1, 1, true, true, false, true) == AdaptationCategory.Melee, "Shovel during a blast stays Melee");
         Assert(MahoragaAdaptationSystem.ClassifyDamage(-1, 12, true, false, false, false) == AdaptationCategory.Other, "Vehicle roadkill force 12 must not be Shotgun");
-        Assert(MahoragaAdaptationSystem.CategoryCount == 8, "8 categories");
+        Assert(MahoragaAdaptationSystem.CategoryCount <= 31, "categories fit in the adaptation mask");
     }
 
     private static void TestProgressiveAdaptation()
@@ -311,20 +347,6 @@ internal static class Program
         Assert(sys.GetExposureCount(AdaptationCategory.Other) == 0 && sys.WheelStepCount == 0, "stance hits are not counted as exposures");
     }
 
-    private static void TestProgressiveStun()
-    {
-        AdaptationSettings st = AdaptationSettings.CreateProgressive();
-        var sys = new MahoragaAdaptationSystem();
-        var f1 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 15, 18, false, st, 1f);
-        Assert(!f1.Negated && f1.TriggeredWheelClick && Math.Abs(f1.StunTimeMultiplier - 1f) < 1e-4f, "first flash: full stun + click");
-        var f2 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 15, 18, false, st, 6f);
-        Assert(!f2.Negated && f2.TriggeredWheelClick && Math.Abs(f2.StunTimeMultiplier - 0.60f) < 1e-4f, "second flash: 60 % of the stun + click");
-        var f3 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 15, 18, false, st, 12f);
-        Assert(f3.Negated && f3.TriggeredAdaptation && f3.FinalHP == 18 && sys.IsAdapted(AdaptationCategory.StunGrenade), "third flash: negated, heal, locked");
-        var f4 = sys.EvaluateStun(AdaptationCategory.StunGrenade, 18, 18, false, st, 20f);
-        Assert(f4.Negated && f4.WasAlreadyAdapted && f4.StunTimeMultiplier == 0f, "afterwards fully negated");
-    }
-
     private static void TestZapAntiSpamWithStages()
     {
         AdaptationSettings st = AdaptationSettings.CreateProgressive();
@@ -370,7 +392,7 @@ internal static class Program
         {
             float t = i * 2f;
             attackers.Register(1, t);
-            int f = attackers.Count(t, 6f) < 5 ? floor : 0;
+            int f = attackers.Count(t, 6f) < 3 ? floor : 0;
             var r = sys.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, hp, maxHp, false, st, t, f);
             Assert(!r.IsLethal, $"one Old Bird killed Mahoraga at missile {i}");
             if (r.EffectiveDamage > 0) lastDamage = t;
@@ -380,7 +402,7 @@ internal static class Program
         }
         Assert(minHp >= floor, $"a single Old Bird must never push HP below the floor (min={minHp})");
 
-        // --- FIVE Old Birds shooting together (one missile each every 2 s, staggered): the floor lifts and Mahoraga can die.
+        // --- THREE Old Birds shooting together (one missile each every 2 s, staggered): the floor lifts and Mahoraga can die.
         var sys5 = new MahoragaAdaptationSystem();
         var attackers5 = new DistinctAttackerWindow();
         int hp5 = maxHp;
@@ -388,20 +410,20 @@ internal static class Program
         float t5 = 0f;
         for (int round = 0; round < 60 && !died; round++)
         {
-            for (int bird = 1; bird <= 5 && !died; bird++)
+            for (int bird = 1; bird <= 3 && !died; bird++)
             {
                 t5 = round * 2f + bird * 0.4f;
                 attackers5.Register(bird, t5);
-                int f = attackers5.Count(t5, 6f) < 5 ? floor : 0;
+                int f = attackers5.Count(t5, 6f) < 3 ? floor : 0;
                 var r = sys5.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, hp5, maxHp, false, st, t5, f);
                 hp5 = r.FinalHP;
                 if (r.IsLethal) died = true;
             }
         }
-        Assert(died, "five Old Birds attacking together must be able to kill Mahoraga");
+        Assert(died, "three Old Birds attacking together must be able to kill Mahoraga");
         Assert(t5 < 90f, $"...within a reasonable time (died at t={t5:0.0}s)");
 
-        // Four Old Birds are still not enough.
+        // Even four Old Birds are below a fully adapted boss's six-shooter threshold.
         var sys4 = new MahoragaAdaptationSystem();
         var attackers4 = new DistinctAttackerWindow();
         int hp4 = maxHp;
@@ -411,12 +433,15 @@ internal static class Program
             {
                 float t = round * 2f + bird * 0.4f;
                 attackers4.Register(bird, t);
-                int f = attackers4.Count(t, 6f) < 5 ? floor : 0;
+                int f = attackers4.Count(t, 6f) < 6 ? floor : 0;
                 var r = sys4.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, hp4, maxHp, false, st, t, f);
                 Assert(!r.IsLethal, "four Old Birds must not be enough");
                 hp4 = r.FinalHP;
             }
         }
+        var simultaneous = sys4.EvaluateDamage(AdaptationCategory.OldBirdMissile, 6, 6, maxHp,
+            false, st, 450f, minimumDamage: 6);
+        Assert(simultaneous.IsLethal, "a qualifying barrage can finish Mahoraga through missile resistance");
         Assert(st.OldBirdMissileFullResistance == 0.90f && st.FullResistance == 0.95f, "missile ceiling is independent of the general one");
     }
 
@@ -646,8 +671,6 @@ internal static class Program
         Assert(cfg.OutdoorMoonRarityOverrides.Value == "", "OutdoorMoonRarityOverrides default must be empty string");
         Assert(cfg.OutdoorMaxCount.Value == 1, $"OutdoorMaxCount default must be 1 (got {cfg.OutdoorMaxCount.Value})");
         Assert(Math.Abs(cfg.OutdoorPowerLevel.Value - 3.0f) < 1e-4f, $"OutdoorPowerLevel default must be 3.0f (got {cfg.OutdoorPowerLevel.Value})");
-        Assert(cfg.HuntPlayers.Value == true, "HuntPlayers (indoors) default must be true");
-        Assert(cfg.HuntPlayersOutdoors.Value == false, "HuntPlayersOutdoors default must be false");
         Assert(cfg.FightOldBirds.Value == true, "FightOldBirds default must be true");
         Assert(Math.Abs(cfg.OldBirdSeekRange.Value - 250.0f) < 1e-4f, $"OldBirdSeekRange default must be 250f (got {cfg.OldBirdSeekRange.Value})");
         var seekRange = cfg.OldBirdSeekRange.Description.AcceptableValues as BepInEx.Configuration.AcceptableValueRange<float>;

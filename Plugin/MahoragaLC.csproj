@@ -4,7 +4,7 @@
   <PropertyGroup>
     <AssemblyName>Fede.MahoragaLC</AssemblyName>
     <Product>MahoragaLC</Product>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <ThunderstoreTeam>MahoragaTeam</ThunderstoreTeam>
     <Description>Eight-Handled Sword Divergent Sila Divine General Mahoraga apex enemy mod for Lethal Company.</Description>
   </PropertyGroup>
@@ -80,7 +80,7 @@
   </Target>
 
   <!-- Thunderstore Package Build on Release -->
-  <Target Name="PackThunderstore" DependsOnTargets="NetcodePatch" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' == 'Release' AND Exists('$(ProjectDir)Thunderstore/thunderstore.toml')">
+  <Target Name="PackThunderstore" DependsOnTargets="NetcodePatch" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' == 'Release' AND Exists('$(ProjectDir)Thunderstore/thunderstore.toml') AND Exists('$(ProjectDir)../artifacts/thunderstore/mahoraga_assets')">
     <Exec Command="dotnet tcli build --config-path &quot;$(ProjectDir)Thunderstore/thunderstore.toml&quot; --package-version $(Version) --package-name $(Product) --package-namespace $(ThunderstoreTeam)" />
   </Target>
 

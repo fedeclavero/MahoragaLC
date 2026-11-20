@@ -71,24 +71,6 @@ internal static class SummonAndHuntTests
         Assert(!HuntLogic.IsOutsideAt(-90f, false) && HuntLogic.IsOutsideAt(-90f, true), "dead band keeps the current domain (no flip-flop)");
     }
 
-    public static void TestOutdoorPerception()
-    {
-        Assert(!HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: true, huntPlayersIndoors: true, huntPlayersOutdoors: false),
-            "outdoors with huntPlayersOutdoors=false must NOT hunt without LOS");
-        Assert(!HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: true, huntPlayersIndoors: false, huntPlayersOutdoors: false),
-            "outdoors with both false must NOT hunt without LOS");
-        Assert(HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: false, huntPlayersIndoors: true, huntPlayersOutdoors: false),
-            "indoors with huntPlayersIndoors=true must hunt without LOS");
-        Assert(HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: false, huntPlayersIndoors: true, huntPlayersOutdoors: true),
-            "indoors with huntPlayersIndoors=true and huntPlayersOutdoors=true must hunt without LOS");
-        Assert(!HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: false, huntPlayersIndoors: false, huntPlayersOutdoors: true),
-            "indoors with huntPlayersIndoors=false must NOT hunt without LOS even if outdoors is true");
-        Assert(HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: true, huntPlayersIndoors: false, huntPlayersOutdoors: true),
-            "outdoors with huntPlayersOutdoors=true must hunt without LOS");
-        Assert(HuntLogic.ShouldHuntWithoutLineOfSight(isOutside: true, huntPlayersIndoors: true, huntPlayersOutdoors: true),
-            "outdoors with huntPlayersOutdoors=true and huntPlayersIndoors=true must hunt without LOS");
-    }
-
     public static void TestShadowAmbushGating()
     {
         bool Valid(
@@ -209,27 +191,4 @@ internal static class SummonAndHuntTests
         Assert(Near(new SubmergeTimeline(float.NaN).Duration, SubmergeTimeline.ReferenceDuration), "NaN submerge duration falls back to ReferenceDuration (2.6s)");
     }
 
-    public static void TestCandidateOrdering()
-    {
-        var list = new List<HuntLogic.Candidate>
-        {
-            new HuntLogic.Candidate(3, 30f),
-            new HuntLogic.Candidate(1, 10f),
-            new HuntLogic.Candidate(2, 20f),
-            new HuntLogic.Candidate(0, 5f)
-        };
-
-        var ordered = HuntLogic.OrderCandidates(list, id => id == 0, 2);
-        Assert(ordered.Count == 2 && ordered[0].Id == 1 && ordered[1].Id == 2, "blocked player skipped, nearest first, capped to maxCount");
-        Assert(HuntLogic.OrderCandidates(new List<HuntLogic.Candidate>(), id => false, 3).Count == 0, "no candidates -> empty (patrol fallback)");
-        Assert(HuntLogic.OrderCandidates(list, id => true, 3).Count == 0, "all blocked -> empty (patrol fallback)");
-    }
-
-    public static void TestStuckDetection()
-    {
-        Assert(HuntLogic.IsStuck(0.1f, 3f, 20f), "no progress with a long way to go is stuck");
-        Assert(!HuntLogic.IsStuck(4f, 3f, 20f), "moving is not stuck");
-        Assert(!HuntLogic.IsStuck(0.1f, 3f, 1.5f), "standing at the destination is not stuck");
-        Assert(!HuntLogic.IsStuck(0.1f, 1f, 20f), "window too short to judge");
-    }
 }

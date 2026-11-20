@@ -1,172 +1,59 @@
+using System;
 using HarmonyLib;
-using UnityEngine;
 
 namespace MahoragaLC.Patches
 {
     [HarmonyPatch]
     internal static class ExplosionTrackingPatch
     {
-        private struct TimedEvent
-        {
-            public Vector3 Position;
-            public float Time;
-            public float Range;
-        }
+        [ThreadStatic] private static int _explosionDepth;
+        [ThreadStatic] private static RadMechAI? _missileSource;
+        [ThreadStatic] private static StunGrenadeItem? _grenade;
+        [ThreadStatic] private static int _flashDepth;
 
-        private const int BufferCapacity = 16;
-        private static readonly TimedEvent[] ExplosionRing = new TimedEvent[BufferCapacity];
-        private static int _explosionCursor;
-
-        private static readonly TimedEvent[] FlashRing = new TimedEvent[BufferCapacity];
-        private static int _flashCursor;
-
-        // Old Bird (RadMechAI) missile blasts, tracked separately so Mahoraga can give them their own adaptation category.
-        private struct MissileEvent
-        {
-            public Vector3 Position;
-            public float Time;
-            public float Range;
-            public EnemyAI? Source;
-        }
-
-        private static readonly MissileEvent[] MissileRing = new MissileEvent[BufferCapacity];
-        private static int _missileCursor;
+        internal static bool InExplosion => _explosionDepth > 0;
+        internal static RadMechAI? MissileSource => _explosionDepth == 1 ? _missileSource : null;
+        internal static StunGrenadeItem? FlashGrenade => _grenade;
+        internal static bool InFlash => _flashDepth > 0;
 
         [HarmonyPatch(typeof(Landmine), nameof(Landmine.SpawnExplosion))]
         [HarmonyPrefix]
-        private static void OnSpawnExplosion(Vector3 explosionPosition, float damageRange)
+        private static void EnterExplosion() => _explosionDepth++;
+
+        [HarmonyPatch(typeof(Landmine), nameof(Landmine.SpawnExplosion))]
+        [HarmonyFinalizer]
+        private static void LeaveExplosion() => _explosionDepth--;
+
+        [HarmonyPatch(typeof(RadMechAI), nameof(RadMechAI.SetExplosion))]
+        [HarmonyPrefix]
+        private static void EnterMissile(RadMechAI __instance, out RadMechAI? __state)
         {
-            ExplosionRing[_explosionCursor] = new TimedEvent
-            {
-                Position = explosionPosition,
-                Time = Time.time,
-                Range = Mathf.Max(damageRange, 4.5f)
-            };
-            _explosionCursor = (_explosionCursor + 1) % BufferCapacity;
+            __state = _missileSource;
+            _missileSource = __instance;
         }
+
+        [HarmonyPatch(typeof(RadMechAI), nameof(RadMechAI.SetExplosion))]
+        [HarmonyFinalizer]
+        private static void LeaveMissile(RadMechAI? __state) => _missileSource = __state;
+
+        [HarmonyPatch(typeof(StunGrenadeItem), nameof(StunGrenadeItem.StunExplosion))]
+        [HarmonyPrefix]
+        private static void EnterFlash() => _flashDepth++;
+
+        [HarmonyPatch(typeof(StunGrenadeItem), nameof(StunGrenadeItem.StunExplosion))]
+        [HarmonyFinalizer]
+        private static void LeaveFlash() => _flashDepth--;
 
         [HarmonyPatch(typeof(StunGrenadeItem), "ExplodeStunGrenade")]
         [HarmonyPrefix]
-        private static void OnExplodeStunGrenade(StunGrenadeItem __instance)
+        private static void EnterGrenade(StunGrenadeItem __instance, out StunGrenadeItem? __state)
         {
-            if (__instance == null || __instance.hasExploded)
-            {
-                return;
-            }
-
-            FlashRing[_flashCursor] = new TimedEvent
-            {
-                Position = __instance.transform.position,
-                Time = Time.time,
-                Range = 13.0f
-            };
-            _flashCursor = (_flashCursor + 1) % BufferCapacity;
+            __state = _grenade;
+            _grenade = __instance;
         }
 
-        // RadMechAI.SetExplosion runs on the host machine for every missile impact (server path and client-reported path)
-        // right before Landmine.SpawnExplosion, which is what damages enemies via HitEnemyOnLocalClient(6).
-        [HarmonyPatch(typeof(RadMechAI), nameof(RadMechAI.SetExplosion))]
-        [HarmonyPrefix]
-        private static void OnRadMechSetExplosion(RadMechAI __instance, Vector3 explosionPosition, Vector3 forwardRotation)
-        {
-            if (__instance == null)
-            {
-                return;
-            }
-
-            MissileRing[_missileCursor] = new MissileEvent
-            {
-                Position = explosionPosition - forwardRotation * 0.1f,
-                Time = Time.time,
-                Range = 7f,
-                Source = __instance
-            };
-            _missileCursor = (_missileCursor + 1) % BufferCapacity;
-        }
-
-        /// <summary>True when an Old Bird missile detonated close to <paramref name="worldPos"/> in the last <paramref name="maxAge"/> seconds.</summary>
-        public static bool HasRecentMissileNear(Vector3 worldPos, float now, out EnemyAI? source, float maxAge = 0.25f, float extraMargin = 2.0f)
-        {
-            source = null;
-            float bestDistSq = float.MaxValue;
-            bool found = false;
-            for (int i = 0; i < BufferCapacity; i++)
-            {
-                MissileEvent evt = MissileRing[i];
-                if (evt.Range <= 0f)
-                {
-                    continue;
-                }
-
-                float age = now - evt.Time;
-                if (age < 0f || age > maxAge)
-                {
-                    continue;
-                }
-
-                float maxDist = evt.Range + extraMargin;
-                float distSq = (worldPos - evt.Position).sqrMagnitude;
-                if (distSq <= maxDist * maxDist && distSq < bestDistSq)
-                {
-                    bestDistSq = distSq;
-                    source = evt.Source;
-                    found = true;
-                }
-            }
-
-            return found;
-        }
-
-        public static bool HasRecentExplosionNear(Vector3 worldPos, float now, float maxAge = 0.25f, float extraMargin = 5.0f)
-        {
-            for (int i = 0; i < BufferCapacity; i++)
-            {
-                TimedEvent evt = ExplosionRing[i];
-                if (evt.Range <= 0f)
-                {
-                    continue;
-                }
-
-                float age = now - evt.Time;
-                if (age < 0f || age > maxAge)
-                {
-                    continue;
-                }
-
-                float maxDist = evt.Range + extraMargin;
-                if ((worldPos - evt.Position).sqrMagnitude <= maxDist * maxDist)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        public static bool HasRecentFlashNear(Vector3 worldPos, float now, float maxAge = 0.25f, float extraMargin = 4.0f)
-        {
-            for (int i = 0; i < BufferCapacity; i++)
-            {
-                TimedEvent evt = FlashRing[i];
-                if (evt.Range <= 0f)
-                {
-                    continue;
-                }
-
-                float age = now - evt.Time;
-                if (age < 0f || age > maxAge)
-                {
-                    continue;
-                }
-
-                float maxDist = evt.Range + extraMargin;
-                if ((worldPos - evt.Position).sqrMagnitude <= maxDist * maxDist)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
+        [HarmonyPatch(typeof(StunGrenadeItem), "ExplodeStunGrenade")]
+        [HarmonyFinalizer]
+        private static void LeaveGrenade(StunGrenadeItem? __state) => _grenade = __state;
     }
 }

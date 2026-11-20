@@ -4,6 +4,8 @@
 
 ---
 
+The runtime behavior for 1.1 and its current spawn settings are described in the [project README](../README.md). Some implementation notes below describe 1.0.
+
 ## 1. System Overview & Target Runtime Stack
 
 **Fede.MahoragaLC** is a server-authoritative **BepInEx 5** + **LethalLib 1.2.0** + **Unity Netcode for GameObjects (`1.12.2`, NetcodePatcher)** enemy mod targeting Lethal Company on **Unity `2022.3.62f2`** with **HDRP `14.0.12`** and **AI.Navigation `1.1.6`**.
@@ -91,9 +93,9 @@ flowchart TD
        MahoragaTerminalNode,
        MahoragaTerminalKeyword);
    ```
-   - **Optional Outdoor Spawn (`AllowOutdoorSpawn == true`):**
-     Instantiates a runtime clone `outdoorEnemyType = Object.Instantiate(MahoragaEnemyType)` with `outdoorEnemyType.isOutsideEnemy = true`, keeping the same `MahoragaPrefab`, and calls `Enemies.RegisterEnemy(outdoorEnemyType, Enemies.SpawnType.Outside, outsideRarities, outsideCustomRarities, infoNode: null, infoKeyword: null)` (passing `null` terminal assets avoids duplicate Bestiary entries!).
-   - LethalLib automatically hooks `Terminal.Start`, assigns the next free `creatureFileID` to `MahoragaTerminalNode`, copies it onto `MahoragaPrefab`'s `ScanNodeProperties.creatureScanID`, registers the `"mahoraga"` `info` keyword, and inserts Mahoraga into `QuickMenuManager.testAllEnemiesLevel` (so Imperium discovers it automatically!).
+   - **Optional outdoor spawn.** With `AllowOutdoorSpawn` enabled, LethalLib registers the dedicated `MahoragaEnemyType_Outside` and its matching `MahoragaPrefab_Outside` in the outdoor pool. Older bundles without that asset pair only register the indoor profile.
+   - LethalLib assigns the terminal entry's `creatureFileID` and registers the `mahoraga` keyword. Both prefabs use that bestiary ID.
+   - Imperium discovers enemy assets through Unity's resource catalog. The optional integration lists one Mahoraga and selects the dedicated prefab for the requested location. Its manual Old Bird spawns use a network prefab that starts without a dormant nest.
 7. **Minimal Harmony Patching:**
    Applies lightweight postfix hooks in `MahoragaLC.Patches.ExplosionTrackingPatch` solely on `Landmine.SpawnExplosion` and `StunGrenadeItem.ExplodeStunGrenade` to record `(Vector3 pos, float time, float range)` for 100% deterministic classification.
 

@@ -207,21 +207,7 @@ namespace MahoragaLC.AI
 
             // The summon roar already announced him: do not roar again the instant he starts chasing.
             _roarCooldownTimer = Mathf.Max(_roarCooldownTimer, RoarCooldownSeconds * 0.5f);
-            RecordPlayerSightServer();
-
-            int ambushClientId = _pendingAmbushTargetClientId;
-            _pendingAmbushTargetClientId = -1;
-            if (ambushClientId >= 0)
-            {
-                PlayerControllerB? ambushVictim = ResolvePlayerByClientId(ambushClientId);
-                if (ambushVictim != null && PlayerIsTargetable(ambushVictim) &&
-                    (HasLineOfSightToPlayer(ambushVictim, isOutside ? 48f : 35f) ||
-                     Vector3.Distance(transform.position, ambushVictim.transform.position) <= 12f))
-                {
-                    EnterChaseStateServer(ambushVictim);
-                    return;
-                }
-            }
+            RecordPlayerContactServer();
 
             EnterPatrolStateServer();
         }

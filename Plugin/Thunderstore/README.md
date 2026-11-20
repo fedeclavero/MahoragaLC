@@ -1,77 +1,35 @@
-# Mahoraga LC (`Fede.MahoragaLC`)
+# Mahoraga LC | Jujutsu Kaisen Boss for Lethal Company
 
-> *"Eight-Handled Sword Divergent Sila Divine General Mahoraga — Uncontained Apex Anomaly (Danger Level: 95%)."*
+Mahoraga brings the **Dharma Wheel** from *Jujutsu Kaisen* to *Lethal Company*. The Divine General rises from shadows, adapts to repeated attacks, and hunts crews and Old Birds. Swap weapons when you hear the wheel turn.
 
-Adds **Divine General Mahoraga** (*Makora Sila-Octo*) to **Lethal Company** as a server-authoritative multiplayer apex horror boss enemy across all vanilla and modded moons.
+> **Work in progress.** The core encounter is playable. Balance, traversal, and compatibility with modded moons and equipment are still being refined.
 
----
+## What you'll encounter
 
-## Features
+- **Sound-based hunting.** Mahoraga patrols until it hears noise or gets within about one meter of a player. Crouch to keep your footsteps quiet. Late in the day it can emerge from the shadows near a recent sound.
+- **Progressive adaptation.** Shovels, knives, shotguns, explosions, direct Cruiser impacts, and Old Bird missiles are tracked separately. Four players can land a coordinated shovel finisher before it adapts to shovels. After a wheel turn for shovels, the same team needs an extra blow per stage. From the third flashbang onward, its stun lasts half as long.
+- **Old Bird fights.** Mahoraga automatically hunts Old Birds and grows outdoors when their missiles hit it. Three different Old Birds can overcome its health protection before missile adaptation. Other creatures face retaliation when the mod can identify who hit Mahoraga.
+- **Indoor and outdoor spawns.** Each uses a separate weighted pool on eligible vanilla and modded moons. Default weights are 20 indoors and 14 outdoors. Moon budgets, spawn points, and the spawn roll determine whether it appears.
+- **Traversal.** Mahoraga can jump across supported gaps. After growing it can also jump onto the edge of the landed ship when the door is open and the route is clear. Mahoraga can also force key-locked doors. Scan it or type `info mahoraga` in the ship terminal for the bestiary entry.
 
-- **1.5× Crew Stature (`3.75m`)**: Custom-sculpted HDRP 3D model towering over scavengers (`2.50m`) with an eyeless four-winged skull, occipital crest tail, pleated hakama, Sword of Extermination bound to his right forearm, and floating ornate golden Eight-Handled Dharma Wheel.
-- **The Wheel of Adaptation**:
-  - Tracks 6 weapon & crowd-control categories: **Melee** (Shovel, Signs, Knife), **Shotgun**, **Zap Gun**, **Stun Grenade / Flashbang**, **Explosion** (Landmine, Jetpack, Easter Egg), and **Other** (Cruiser, modded weapons).
-  - After enduring repeated hits or stuns from any single category (default threshold: `2`), the golden Dharma Wheel turns **+45°** with a resonant temple gong and radiant HDR gold flash, healing Mahoraga (`20%` Max HP), escalating chase speed, and granting `95%` damage resistance (or `100%` stun immunity) to that category for the rest of the round.
-  - **Lethal-Blow Precedence**: Coordinated crews can still slay Mahoraga by rotating weapon categories and delivering lethal burst damage before the Wheel completes its turn.
-- **Door Forcing & Ship Operator Synergy**:
-  - Rapidly opens unlocked doors and forces key-locked interior doors (`DoorLock`) open after `2.2s` of heavy pounding.
-  - Respects powered **Steel Blast Doors** controlled from the Ship Terminal, preserving Ship Operator teamwork.
-- **Dynamic Proximity & Encounter Music**:
-  - Smooth `35m -> 16m` proximity volume curve with real-time `AudioLowPassFilter` raycast wall muffling (`StartOfRound.Instance.collidersAndRoomMaskAndDefault`).
-  - Spectate-aware inside/outside isolation (`isInsideFactory`), single-instance global mix (zero overlapping tracks), wheel-gong ducking, instant `0.35s` fade-out on death, and optional `CustomMusic/` audio override.
-- **Full Multiplayer & Bestiary Support**:
-  - 100% server-authoritative AI with NetcodePatcher-woven NGO `1.12.2` RPCs (all players must have the mod installed).
-  - Red Danger `ScanNode`, Ship Monitor `MapDot`, and full Ship Terminal Bestiary entry (`info mahoraga`).
+## Install and play
 
----
+1. Select **Lethal Company** in Thunderstore Mod Manager or r2modman.
+2. Search for **MahoragaLC** by **MahoragaTeam** and install it. The manager installs **BepInExPack** and **LethalLib** as dependencies.
+3. Choose **Start modded**. For co-op, the host and all players need the same version of the mod.
 
-## Installation
+Spawn and gameplay checks for this release target **Lethal Company v81**. Imperium is optional.
 
-> **Multiplayer Requirement:** Both the host and all joining clients must install this mod and its dependencies (`BepInEx-BepInExPack` and `Evaisa-LethalLib`).
+## Configuration
 
-### Windows — Thunderstore Mod Manager / r2modman
-1. Open **Thunderstore Mod Manager** or **r2modman** and select **Lethal Company**.
-2. Create or select a profile and install **BepInExPack** (`5.4.2305+`) and **LethalLib** (`1.2.0+`).
-3. Click **Settings → Profile → Import local mod** and choose `Fede-MahoragaLC-1.0.0.zip` (or search for `MahoragaLC` once published on Thunderstore).
-4. Launch Lethal Company via **Start modded**.
+After the first launch, open `BepInEx/config/Fede.MahoragaLC.cfg` in your mod profile. Tune `DefaultInteriorRarity`, `OutdoorRarity`, and the moon overrides under `[Spawning]`. Use `HitsPerAdaptationStage`, `FightOldBirds`, and `EnableShadowAmbush` to adjust how encounters play out.
 
-### Linux — r2modman (Steam / Proton)
-1. Install and launch **r2modman** (`v3.2.21+`) and select **Lethal Company** (Proton).
-2. In Steam, set Lethal Company's Launch Options to:
-   ```bash
-   WINEDLLOVERRIDES="winhttp=n,b" %command%
-   ```
-3. Ensure **BepInExPack** (`5.4.2305+`) and **LethalLib** (`1.2.0+`) are installed in your profile.
-4. Click **Settings → Profile → Import local mod** and select `Fede-MahoragaLC-1.0.0.zip`, then launch with **Start modded**.
-5. **Proton Stability Tip**: In your profile's `BepInEx/config/BepInEx.cfg`, set `[Logging.Console] Enabled = false` (keeping `[Logging.Disk] Enabled = true`). On Wine/Proton, the external Win32 console window (`conhost.exe`) can block the Unity main thread during `StartOfRound` scene transitions when hosting a lobby.
+### Custom encounter music
 
-### Manual Installation
-1. Ensure **BepInEx 5** and **LethalLib 1.2.0+** are installed in your Lethal Company game directory.
-2. Extract `Fede-MahoragaLC-1.0.0.zip` so that BOTH `Fede.MahoragaLC.dll` and `mahoraga_assets` sit together inside:
-   ```text
-   BepInEx/plugins/Fede-MahoragaLC/
-   ├── Fede.MahoragaLC.dll
-   └── mahoraga_assets
-   ```
-
----
-
-## Configuration (`BepInEx/config/Fede.MahoragaLC.cfg`)
-
-Generated automatically on first launch:
-- **`[Spawning]`**: `EnableMod`, `DefaultInteriorRarity` (`20`), `MoonRarityOverrides` (e.g. `Experimentation:10,Titan:35,Artifice:40`), `AllowOutdoorSpawn` (`false`), `OutdoorRarity` (`12`), `PowerLevel` (`3.0`), `MaxCount` (`1`).
-- **`[Combat]`**: `MaxHP` (`18`), `AdaptationThreshold` (`2`), `AdaptedDamageResistance` (`0.95`), `AdaptationHealPercent` (`0.20`), `CleaveDamage` (`55`), `SlamDamage` (`65`), `CanForceLockedDoors` (`true`).
-- **`[Movement]`**: `PatrolSpeed` (`3.2`), `InvestigateSpeed` (`4.5`), `ChaseSpeed` (`6.2`), `ChaseSpeedPerAdaptation` (`0.35`).
-- **`[Audio]`**: `MusicEnabled` (`true`), `MusicMasterVolume` (`0.75`), `MusicOuterRange` (`35.0`), `MusicInnerRange` (`16.0`), `EnableWallMuffling` (`true`), `UseCustomMusicOverride` (`false`).
-
-### Optional Custom Music Override
-To swap the bundled theme with your own `.ogg`, `.wav`, or `.mp3` track:
-1. Set `UseCustomMusicOverride = true` in `BepInEx/config/Fede.MahoragaLC.cfg`.
-2. Create a folder named `CustomMusic` next to `Fede.MahoragaLC.dll` (`BepInEx/plugins/Fede-MahoragaLC/CustomMusic/`) and place your audio file inside.
-
----
+Set `UseCustomMusicOverride = true` under `[Audio]`. Put an `.ogg`, `.wav`, or `.mp3` in a `CustomMusic` folder beside `Fede.MahoragaLC.dll`. The public release includes the mod's sound effects and supports your own local music.
 
 ## Credits
 
-- **Boss theme:** "「Sukuna vs Mahoraga」(Malevolent Shrine) Jujutsu Kaisen S2 EP17 OST [Epic Cover]" by **Pharozen** ([YouTube](https://www.youtube.com/watch?v=vxTLtmpnKn8) · [channel](https://www.youtube.com/@pharozen)), a cover of the *Jujutsu Kaisen* Season 2 original soundtrack. Used in-game from `0:51` onward. All rights belong to their respective owners; if you are the author and want it removed, open an issue at https://github.com/fedeclavero/MahoragaLC and it will be replaced.
-- **Mahoraga** and *Jujutsu Kaisen* belong to Gege Akutami, Shueisha and MAPPA. *Lethal Company* belongs to Zeekerss. This is a non-commercial fan project, not affiliated with any of them.
+Fan-made mod inspired by *Jujutsu Kaisen* by Gege Akutami. *Lethal Company* is by Zeekerss. Cover art created with ImageGen.
+
+[Report an issue](https://github.com/fedeclavero/MahoragaLC/issues)

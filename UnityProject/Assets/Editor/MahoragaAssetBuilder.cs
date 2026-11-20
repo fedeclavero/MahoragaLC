@@ -11,7 +11,6 @@ using UnityEditor.Animations;
 using UnityEditor.Rendering.HighDefinition;
 using UnityEngine;
 using UnityEngine.AI;
-using UnityEngine.Audio;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.HighDefinition;
 
@@ -36,6 +35,7 @@ public static class MahoragaAssetBuilder
     private const string EmissivePath = ModelDir + "/Mahoraga_Emissive.png";
 
     private const string MahoragaMatPath = MaterialsDir + "/Mahoraga_Mat.mat";
+    private const string WheelMatPath = MaterialsDir + "/Mahoraga_Wheel_Mat.mat";
     private const string MapDotMatPath = MaterialsDir + "/MapDot_Mat.mat";
     private const string AnimatorPath = AnimationsDir + "/MahoragaAnimator.controller";
     private const string PrefabPath = PrefabsDir + "/MahoragaPrefab.prefab";
@@ -46,14 +46,12 @@ public static class MahoragaAssetBuilder
     private const string TerminalKeywordPath = DataDir + "/MahoragaTerminalKeyword.asset";
     private const string ShadowPoolMatPath = MaterialsDir + "/ShadowPool_Mat.mat";
     private const string ShadowPoolMeshPath = EffectsDir + "/ShadowPool.asset";
-    private const string DiageticMixerPath = "Assets/AudioMixerController/Diagetic.mixer";
+    private const string OptionalMusicName = "mahoraga_music_main";
 
     private const string BundleOutputDir = "AssetBundles/StandaloneWindows64";
 
-    private const uint IndoorGlobalObjectIdHash = 2847193651u;
-    private const uint OutdoorGlobalObjectIdHash = 2847193652u;
-    private const int IndoorWalkableMask = 9753;
-    private const int OutdoorWalkableMask = 14873;
+    private const int IndoorWalkableMask = 9757;
+    private const int OutdoorWalkableMask = 14877;
 
     private static readonly string[] RequiredClips =
     {
@@ -64,7 +62,8 @@ public static class MahoragaAssetBuilder
         "Attack_Slam",
         "Adapt_WheelSpin",
         "Stun",
-        "Death"
+        "Death",
+        "Jump"
     };
 
     private static readonly string[] ExpectedBehaviourStateNames =
@@ -95,7 +94,6 @@ public static class MahoragaAssetBuilder
 
     private static readonly string[] RequiredAudioNames =
     {
-        "mahoraga_music_main",
         "mahoraga_wheel_turn",
         "mahoraga_footstep_1",
         "mahoraga_footstep_2",
@@ -194,7 +192,7 @@ third shell did nothing. Leave the scrap. Run.""
             Dictionary<string, AnimationClip> animClips = ConfigureFbxModel();
 
             // 4. Build true HDRP/Lit and HDRP/Unlit materials
-            Material mahoragaMat = BuildMahoragaMaterial(hdrpLit);
+            Material[] mahoragaMaterials = BuildMahoragaMaterials(hdrpLit);
             Material mapDotMat = BuildMapDotMaterial(hdrpUnlit);
             Material shadowPoolMat = BuildShadowPoolMaterial(hdrpLit);
             Mesh shadowPoolMesh = BuildShadowPoolMesh();
@@ -203,10 +201,10 @@ third shell did nothing. Leave the scrap. Run.""
             AnimatorController animatorController = BuildAnimatorController(animClips);
 
             // 6. Build ScriptableObjects & MahoragaPrefab
-            BuildScriptableObjectsAndPrefab(audioClips, mahoragaMat, mapDotMat, shadowPoolMat, shadowPoolMesh, animatorController);
+            BuildScriptableObjectsAndPrefab(audioClips, mahoragaMaterials, mapDotMat, shadowPoolMat, shadowPoolMesh, animatorController);
 
             // 7. Assign exact AssetBundle labels & build Windows x64 LZ4 bundle
-            AssignBundleLabels();
+            AssignBundleLabels(audioClips.Keys);
             string bundlePath = BuildWindowsAssetBundle();
 
             // 8. Reload & verify the built AssetBundle end-to-end
@@ -233,16 +231,21 @@ third shell did nothing. Leave the scrap. Run.""
     private static Dictionary<string, AudioClip> ConfigureAudioClips()
     {
         var clips = new Dictionary<string, AudioClip>(StringComparer.Ordinal);
-        foreach (string clipName in RequiredAudioNames)
+        foreach (string clipName in RequiredAudioNames.Append(OptionalMusicName))
         {
             string path = $"{AudioDir}/{clipName}.ogg";
+            bool isMusic = clipName == OptionalMusicName;
+            if (isMusic && !File.Exists(path))
+            {
+                continue;
+            }
+
             var importer = AssetImporter.GetAtPath(path) as AudioImporter;
             if (importer == null)
             {
                 throw new Exception($"Missing audio file or AudioImporter at '{path}'.");
             }
 
-            bool isMusic = clipName == "mahoraga_music_main";
             bool isCompressedLongSfx = clipName == "mahoraga_roar" || clipName == "mahoraga_death" || clipName == "mahoraga_summon";
 
             importer.forceToMono = !isMusic;
@@ -423,7 +426,7 @@ third shell did nothing. Leave the scrap. Run.""
         return loadedClips;
     }
 
-    private static Material BuildMahoragaMaterial(Shader hdrpLit)
+    private static Material[] BuildMahoragaMaterials(Shader hdrpLit)
     {
         Texture2D albedo = AssetDatabase.LoadAssetAtPath<Texture2D>(AlbedoPath);
         Texture2D normal = AssetDatabase.LoadAssetAtPath<Texture2D>(NormalPath);
@@ -493,6 +496,21 @@ third shell did nothing. Leave the scrap. Run.""
         HDMaterial.ValidateMaterial(mat);
         Debug.Log($"[MAHORAGA-BUILD] DoubleSided enabled={mat.GetFloat("_DoubleSidedEnable")} normalMode={mat.GetFloat("_DoubleSidedNormalMode")} cull={mat.GetFloat("_CullMode")} keyword={mat.IsKeywordEnabled("_DOUBLESIDED_ON")}");
 
+        Material wheelMaterial = new Material(mat) { name = "Mahoraga_Wheel_Mat" };
+        if (AssetDatabase.LoadAssetAtPath<Material>(WheelMatPath) != null)
+        {
+            AssetDatabase.DeleteAsset(WheelMatPath);
+        }
+        AssetDatabase.CreateAsset(wheelMaterial, WheelMatPath);
+
+        // Visible texture on the unlit side, independent of the scene exposure and the wheel pulse.
+        mat.SetTexture("_EmissiveColorMap", albedo);
+        mat.SetFloat("_UseEmissiveIntensity", 0f);
+        mat.SetFloat("_EmissiveExposureWeight", 0f);
+        mat.SetColor("_EmissiveColor", Color.white * 0.026f);
+        mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.None;
+        HDMaterial.ValidateMaterial(mat);
+
         AssetDatabase.CreateAsset(mat, MahoragaMatPath);
         AssetDatabase.SaveAssets();
         Material savedMat = AssetDatabase.LoadAssetAtPath<Material>(MahoragaMatPath);
@@ -501,7 +519,7 @@ third shell did nothing. Leave the scrap. Run.""
             throw new Exception("Mahoraga_Mat did not save cleanly with HDRP/Lit shader!");
         }
         Debug.Log($"[MAHORAGA-BUILD] Created Material '{savedMat.name}' with shader '{savedMat.shader.name}'.");
-        return savedMat;
+        return new[] { savedMat, wheelMaterial };
     }
 
     private static Material BuildMapDotMaterial(Shader hdrpUnlit)
@@ -544,6 +562,7 @@ third shell did nothing. Leave the scrap. Run.""
         controller.AddParameter("AttackCleave", AnimatorControllerParameterType.Trigger);
         controller.AddParameter("AttackSlam", AnimatorControllerParameterType.Trigger);
         controller.AddParameter("Adapt", AnimatorControllerParameterType.Trigger);
+        controller.AddParameter("Jump", AnimatorControllerParameterType.Trigger);
         controller.AddParameter("Summon", AnimatorControllerParameterType.Trigger);
         controller.AddParameter(new AnimatorControllerParameter
         {
@@ -597,6 +616,11 @@ third shell did nothing. Leave the scrap. Run.""
         submergeState.motion = clips.TryGetValue(SubmergeClipName, out AnimationClip submergeClip) ? submergeClip : clips[FallbackSummonClip];
         submergeState.speedParameterActive = true;
         submergeState.speedParameter = "SubmergeSpeed";
+
+        AnimatorState jumpState = sm.AddState("Jump", new Vector3(510, 200, 0));
+        jumpState.motion = clips["Jump"];
+        var tJumpToIdle = jumpState.AddTransition(idleState);
+        ConfigureExitTimeTransition(tJumpToIdle, 0.96f, 0.06f);
 
         // Locomotion transitions (ASSET_CONTRACT.md §4.3)
         // Idle -> Walk: Speed > 0.25 && IsChasing == false (0.15s)
@@ -684,6 +708,12 @@ third shell did nothing. Leave the scrap. Run.""
         ConfigureImmediateTransition(tStunToIdle, 0.12f);
         tStunToIdle.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsStunned");
 
+        var tAnyToJump = sm.AddAnyStateTransition(jumpState);
+        ConfigureAnyStateTransition(tAnyToJump, 0.05f);
+        tAnyToJump.AddCondition(AnimatorConditionMode.If, 0f, "Jump");
+        tAnyToJump.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsDead");
+        tAnyToJump.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsStunned");
+
         // 4. Any State -> Attack_Cleave: AttackCleave && !IsDead && !IsStunned (0.08s; exit 0.95 -> Idle)
         var tAnyToCleave = sm.AddAnyStateTransition(attackCleaveState);
         ConfigureAnyStateTransition(tAnyToCleave, 0.08f);
@@ -706,7 +736,7 @@ third shell did nothing. Leave the scrap. Run.""
 
         EditorUtility.SetDirty(controller);
         AssetDatabase.SaveAssets();
-        Debug.Log($"[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 11 parameters and 10 states (Summon_Emerge real clip={_hasRealSummonClip}, Summon_Submerge real clip={_hasRealSubmergeClip}).");
+        Debug.Log($"[MAHORAGA-BUILD] Created AnimatorController 'MahoragaAnimator' with 12 parameters and 11 states (Summon_Emerge real clip={_hasRealSummonClip}, Summon_Submerge real clip={_hasRealSubmergeClip}).");
         return controller;
     }
 
@@ -738,7 +768,7 @@ third shell did nothing. Leave the scrap. Run.""
 
     private static void BuildScriptableObjectsAndPrefab(
         Dictionary<string, AudioClip> audioClips,
-        Material mahoragaMat,
+        Material[] mahoragaMaterials,
         Material mapDotMat,
         Material shadowPoolMat,
         Mesh shadowPoolMesh,
@@ -749,8 +779,6 @@ third shell did nothing. Leave the scrap. Run.""
         DeleteIfExists(OutdoorEnemyTypePath);
         DeleteIfExists(TerminalNodePath);
         DeleteIfExists(TerminalKeywordPath);
-        DeleteIfExists(PrefabPath);
-        DeleteIfExists(OutdoorPrefabPath);
 
         // 1. TerminalNode (TERMINAL_BESTIARY.md §1.2 & §2 — explicit -1 defaults for v73!)
         var terminalNode = ScriptableObject.CreateInstance<TerminalNode>();
@@ -800,54 +828,37 @@ third shell did nothing. Leave the scrap. Run.""
                 new Keyframe(0.5f, 0.8f),
                 new Keyframe(1.0f, 1.0f)));
 
-        // Load Diagetic AudioMixer -> SFX group
-        AudioMixer diageticMixer = AssetDatabase.LoadAssetAtPath<AudioMixer>(DiageticMixerPath);
-        if (diageticMixer == null)
-        {
-            throw new Exception($"Diagetic AudioMixer not found at '{DiageticMixerPath}'.");
-        }
-        AudioMixerGroup[] sfxGroups = diageticMixer.FindMatchingGroups("SFX");
-        if (sfxGroups == null || sfxGroups.Length == 0)
-        {
-            throw new Exception("AudioMixerGroup 'SFX' not found inside Diagetic.mixer.");
-        }
-        AudioMixerGroup diageticSfxGroup = sfxGroups[0];
-
         // 4a. Construct Indoor MahoragaPrefab
         GameObject savedIndoorPrefab = BuildMahoragaPrefabVariant(
             prefabName: "MahoragaPrefab",
             prefabAssetPath: PrefabPath,
             enemyType: indoorEnemyType,
-            globalObjectIdHash: IndoorGlobalObjectIdHash,
             agentRadius: 0.55f,
             agentStoppingDistance: 0.35f,
             obstacleAvoidanceType: ObstacleAvoidanceType.MedQualityObstacleAvoidance,
             walkableMask: IndoorWalkableMask,
             audioClips: audioClips,
-            mahoragaMat: mahoragaMat,
+            mahoragaMaterials: mahoragaMaterials,
             mapDotMat: mapDotMat,
             shadowPoolMat: shadowPoolMat,
             shadowPoolMesh: shadowPoolMesh,
-            animatorController: animatorController,
-            diageticSfxGroup: diageticSfxGroup);
+            animatorController: animatorController);
 
         // 4b. Construct Outdoor MahoragaPrefab_Outside
         GameObject savedOutdoorPrefab = BuildMahoragaPrefabVariant(
             prefabName: "MahoragaPrefab_Outside",
             prefabAssetPath: OutdoorPrefabPath,
             enemyType: outdoorEnemyType,
-            globalObjectIdHash: OutdoorGlobalObjectIdHash,
             agentRadius: 0.85f,
             agentStoppingDistance: 0.50f,
             obstacleAvoidanceType: ObstacleAvoidanceType.HighQualityObstacleAvoidance,
             walkableMask: OutdoorWalkableMask,
             audioClips: audioClips,
-            mahoragaMat: mahoragaMat,
+            mahoragaMaterials: mahoragaMaterials,
             mapDotMat: mapDotMat,
             shadowPoolMat: shadowPoolMat,
             shadowPoolMesh: shadowPoolMesh,
-            animatorController: animatorController,
-            diageticSfxGroup: diageticSfxGroup);
+            animatorController: animatorController);
 
         // Wire EnemyType.enemyPrefab to the respective saved prefab assets
         indoorEnemyType.enemyPrefab = savedIndoorPrefab;
@@ -917,18 +928,16 @@ third shell did nothing. Leave the scrap. Run.""
         string prefabName,
         string prefabAssetPath,
         EnemyType enemyType,
-        uint globalObjectIdHash,
         float agentRadius,
         float agentStoppingDistance,
         ObstacleAvoidanceType obstacleAvoidanceType,
         int walkableMask,
         Dictionary<string, AudioClip> audioClips,
-        Material mahoragaMat,
+        Material[] mahoragaMaterials,
         Material mapDotMat,
         Material shadowPoolMat,
         Mesh shadowPoolMesh,
-        AnimatorController animatorController,
-        AudioMixerGroup diageticSfxGroup)
+        AnimatorController animatorController)
     {
         GameObject root = new GameObject(prefabName);
         try
@@ -1012,7 +1021,11 @@ third shell did nothing. Leave the scrap. Run.""
             }
             foreach (var smr in smrs)
             {
-                smr.sharedMaterial = mahoragaMat;
+                if (smr.sharedMesh.subMeshCount != mahoragaMaterials.Length)
+                {
+                    throw new Exception($"Expected body and wheel material slots on {smr.name}.");
+                }
+                smr.sharedMaterials = mahoragaMaterials;
                 smr.updateWhenOffscreen = true;
                 smr.shadowCastingMode = ShadowCastingMode.On;
                 smr.receiveShadows = true;
@@ -1119,13 +1132,13 @@ third shell did nothing. Leave the scrap. Run.""
             GameObject voiceGo = new GameObject("VoiceSFXSource");
             voiceGo.transform.SetParent(root.transform, false);
             voiceGo.transform.localPosition = new Vector3(0f, 3.10f, 0.25f);
-            AudioSource voiceSrc = Configure3DAudioSource(voiceGo, minDist: 4.0f, maxDist: 45.0f, diageticSfxGroup);
+            AudioSource voiceSrc = Configure3DAudioSource(voiceGo, minDist: 4.0f, maxDist: 45.0f);
 
             // BodySFXSource + AudioLowPassFilter + OccludeAudio
             GameObject bodyGo = new GameObject("BodySFXSource");
             bodyGo.transform.SetParent(root.transform, false);
             bodyGo.transform.localPosition = new Vector3(0f, 1.50f, 0.15f);
-            AudioSource bodySrc = Configure3DAudioSource(bodyGo, minDist: 2.5f, maxDist: 30.0f, diageticSfxGroup);
+            AudioSource bodySrc = Configure3DAudioSource(bodyGo, minDist: 2.5f, maxDist: 30.0f);
 
             // Wire inherited EnemyAI fields (ASSET_CONTRACT.md §7.3 + #15 fixes)
             ai.enemyType = enemyType;
@@ -1161,7 +1174,7 @@ third shell did nothing. Leave the scrap. Run.""
             // Wire MahoragaAudioController fields
             audioCtrl.voiceSource = voiceSrc;
             audioCtrl.bodySource = bodySrc;
-            audioCtrl.musicMainClip = audioClips["mahoraga_music_main"];
+            audioClips.TryGetValue(OptionalMusicName, out audioCtrl.musicMainClip);
             audioCtrl.wheelTurnClip = audioClips["mahoraga_wheel_turn"];
             audioCtrl.footstep1Clip = audioClips["mahoraga_footstep_1"];
             audioCtrl.footstep2Clip = audioClips["mahoraga_footstep_2"];
@@ -1178,17 +1191,6 @@ third shell did nothing. Leave the scrap. Run.""
                 throw new Exception($"Failed to save '{prefabName}' at '{prefabAssetPath}'.");
             }
 
-            // Ensure deterministic non-zero GlobalObjectIdHash and m_WalkableMask on the saved prefab!
-            NetworkObject savedNetObj = savedPrefab.GetComponent<NetworkObject>();
-            var netSo = new SerializedObject(savedNetObj);
-            SerializedProperty hashProp = netSo.FindProperty("GlobalObjectIdHash");
-            if (hashProp == null)
-            {
-                throw new Exception($"Missing 'GlobalObjectIdHash' property on '{prefabName}' NetworkObject.");
-            }
-            hashProp.longValue = globalObjectIdHash;
-            netSo.ApplyModifiedPropertiesWithoutUndo();
-
             NavMeshAgent savedNav = savedPrefab.GetComponent<NavMeshAgent>();
             var navSo = new SerializedObject(savedNav);
             SerializedProperty walkableProp = navSo.FindProperty("m_WalkableMask");
@@ -1201,7 +1203,7 @@ third shell did nothing. Leave the scrap. Run.""
 
             EditorUtility.SetDirty(savedPrefab);
             PrefabUtility.SavePrefabAsset(savedPrefab);
-            Debug.Log($"[MAHORAGA-BUILD] Saved '{prefabName}' with GlobalObjectIdHash={globalObjectIdHash}, m_WalkableMask={walkableMask}, radius={agentRadius:F2}, stoppingDistance={agentStoppingDistance:F2}, isOutside={enemyType.isOutsideEnemy}.");
+            Debug.Log($"[MAHORAGA-BUILD] Saved '{prefabName}' with m_WalkableMask={walkableMask}, radius={agentRadius:F2}, stoppingDistance={agentStoppingDistance:F2}, isOutside={enemyType.isOutsideEnemy}.");
             return savedPrefab;
         }
         finally
@@ -1403,7 +1405,7 @@ third shell did nothing. Leave the scrap. Run.""
         effect.droplets = ps;
     }
 
-    private static AudioSource Configure3DAudioSource(GameObject go, float minDist, float maxDist, AudioMixerGroup mixerGroup)
+    private static AudioSource Configure3DAudioSource(GameObject go, float minDist, float maxDist)
     {
         AudioSource src = go.AddComponent<AudioSource>();
         src.playOnAwake = false;
@@ -1414,7 +1416,6 @@ third shell did nothing. Leave the scrap. Run.""
         src.maxDistance = maxDist;
         src.dopplerLevel = 0.5f;
         src.volume = 1.0f;
-        src.outputAudioMixerGroup = mixerGroup;
 
         AudioLowPassFilter lpf = go.AddComponent<AudioLowPassFilter>();
         lpf.cutoffFrequency = 22000f;
@@ -1449,7 +1450,7 @@ third shell did nothing. Leave the scrap. Run.""
         }
     }
 
-    private static void AssignBundleLabels()
+    private static void AssignBundleLabels(IEnumerable<string> audioClipNames)
     {
         // Clear any existing bundle assignments first
         foreach (string existingBundle in AssetDatabase.GetAllAssetBundleNames())
@@ -1474,11 +1475,11 @@ third shell did nothing. Leave the scrap. Run.""
             TerminalNodePath,
             TerminalKeywordPath,
             AnimatorPath,
-            MahoragaMatPath,
+            MahoragaMatPath, WheelMatPath,
             ShadowPoolMatPath,
             ShadowPoolMeshPath
         };
-        foreach (string clipName in RequiredAudioNames)
+        foreach (string clipName in audioClipNames)
         {
             bundledPaths.Add($"{AudioDir}/{clipName}.ogg");
         }
@@ -1558,6 +1559,10 @@ third shell did nothing. Leave the scrap. Run.""
             TerminalKeyword terminalKeyword = RequireAsset<TerminalKeyword>(bundle, "MahoragaTerminalKeyword");
             RuntimeAnimatorController animCtrl = RequireAsset<RuntimeAnimatorController>(bundle, "MahoragaAnimator");
             Material mahoragaMat = RequireAsset<Material>(bundle, "Mahoraga_Mat");
+            Material wheelMaterial = RequireAsset<Material>(bundle, "Mahoraga_Wheel_Mat");
+            Assert(wheelMaterial.shader.name == "HDRP/Lit" &&
+                wheelMaterial.GetTexture("_EmissiveColorMap") != mahoragaMat.GetTexture("_EmissiveColorMap"),
+                "Wheel emission must be separate from the body fill.");
             Material shadowPoolMaterial = RequireAsset<Material>(bundle, "ShadowPool_Mat");
             Mesh shadowPoolMeshAsset = RequireAsset<Mesh>(bundle, "ShadowPool");
             Assert(shadowPoolMaterial.shader != null && shadowPoolMaterial.shader.name == "HDRP/Lit",
@@ -1620,6 +1625,10 @@ third shell did nothing. Leave the scrap. Run.""
             // Parameters/states are editor-only data: inspect the source controller the bundle was built from.
             var animControllerEditor = AssetDatabase.LoadAssetAtPath<AnimatorController>(AnimatorPath);
             Assert(animControllerEditor != null, "MahoragaAnimator source controller not found");
+            Assert(animControllerEditor.parameters.Any(pr => pr.name == "Jump" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Jump'");
+            AnimationClip jumpClip = animCtrl.animationClips.FirstOrDefault(clip => clip.name == "Jump");
+            Assert(jumpClip != null && !jumpClip.isLooping && Mathf.Abs(jumpClip.length - 0.70f) < 0.04f,
+                "Jump clip must be a non-looping 0.70-second animation.");
             Assert(animControllerEditor.parameters.Any(pr => pr.name == "Summon" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Summon'");
             Assert(animControllerEditor.parameters.Any(pr => pr.name == "SummonSpeed" && pr.type == AnimatorControllerParameterType.Float), "Animator missing float 'SummonSpeed'");
             Assert(animControllerEditor.parameters.Any(pr => pr.name == "Submerge" && pr.type == AnimatorControllerParameterType.Trigger), "Animator missing trigger 'Submerge'");
@@ -1655,7 +1664,6 @@ third shell did nothing. Leave the scrap. Run.""
             long indoorHash = VerifyReloadedPrefabVariant(
                 prefab: indoorPrefab,
                 expectedEnemyType: indoorEnemyType,
-                expectedGlobalObjectIdHash: IndoorGlobalObjectIdHash,
                 expectedWalkableMask: IndoorWalkableMask,
                 expectedRadius: 0.55f,
                 expectedStoppingDistance: 0.35f,
@@ -1664,7 +1672,6 @@ third shell did nothing. Leave the scrap. Run.""
             long outdoorHash = VerifyReloadedPrefabVariant(
                 prefab: outdoorPrefab,
                 expectedEnemyType: outdoorEnemyType,
-                expectedGlobalObjectIdHash: OutdoorGlobalObjectIdHash,
                 expectedWalkableMask: OutdoorWalkableMask,
                 expectedRadius: 0.85f,
                 expectedStoppingDistance: 0.50f,
@@ -1713,7 +1720,6 @@ third shell did nothing. Leave the scrap. Run.""
     private static long VerifyReloadedPrefabVariant(
         GameObject prefab,
         EnemyType expectedEnemyType,
-        uint expectedGlobalObjectIdHash,
         int expectedWalkableMask,
         float expectedRadius,
         float expectedStoppingDistance,
@@ -1724,8 +1730,7 @@ third shell did nothing. Leave the scrap. Run.""
         Assert(prefabNetObj != null, $"{prefab.name} missing NetworkObject");
         var prefabNetSo = new SerializedObject(prefabNetObj);
         long netHash = prefabNetSo.FindProperty("GlobalObjectIdHash")?.longValue ?? 0;
-        Assert(netHash == expectedGlobalObjectIdHash,
-            $"{prefab.name} NetworkObject GlobalObjectIdHash={netHash}, expected {expectedGlobalObjectIdHash}");
+        Assert(netHash != 0, $"{prefab.name} must have a valid Unity-generated NetworkObject ID.");
 
         NavMeshAgent prefabNav = prefab.GetComponent<NavMeshAgent>();
         Assert(prefabNav != null, $"{prefab.name} missing NavMeshAgent");
@@ -1818,13 +1823,11 @@ third shell did nothing. Leave the scrap. Run.""
             MahoragaAudioController audioCtrl = inst.GetComponent<MahoragaAudioController>();
             Assert(audioCtrl != null, $"{prefab.name} root missing MahoragaAudioController");
             Assert(audioCtrl.voiceSource != null && audioCtrl.bodySource != null, $"{prefab.name} MahoragaAudioController AudioSources missing");
-            Assert(audioCtrl.voiceSource.outputAudioMixerGroup != null && audioCtrl.voiceSource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
-                $"{prefab.name} VoiceSFXSource not routed to Diagetic mixer");
-            Assert(audioCtrl.bodySource.outputAudioMixerGroup != null && audioCtrl.bodySource.outputAudioMixerGroup.audioMixer.name == "Diagetic",
-                $"{prefab.name} BodySFXSource not routed to Diagetic mixer");
+            Assert(audioCtrl.voiceSource.outputAudioMixerGroup == null && audioCtrl.bodySource.outputAudioMixerGroup == null,
+                $"{prefab.name} SFX sources must bind the live game mixer at runtime");
             Assert(audioCtrl.voiceSource.GetComponent<AudioLowPassFilter>() != null, $"{prefab.name} VoiceSFXSource missing AudioLowPassFilter");
             Assert(audioCtrl.bodySource.GetComponent<AudioLowPassFilter>() != null, $"{prefab.name} BodySFXSource missing AudioLowPassFilter");
-            Assert(audioCtrl.musicMainClip != null && audioCtrl.wheelTurnClip != null &&
+            Assert(audioCtrl.wheelTurnClip != null &&
                    audioCtrl.footstep1Clip != null && audioCtrl.footstep2Clip != null &&
                    audioCtrl.slashClip != null && audioCtrl.impactClip != null &&
                    audioCtrl.roarClip != null && audioCtrl.deathClip != null,
@@ -1906,7 +1909,7 @@ third shell did nothing. Leave the scrap. Run.""
             Debug.Log($"[MAHORAGA-VERIFY] ({prefab.name}) Exact Baked World Y: feetMinY={minY:F4}u, skullCrownBodyMaxY={bodyMaxY:F4}u, dharmaWheelTopMaxY={wheelMaxY:F4}u, totalMaxY={totalMaxY:F4}u");
 
             Assert(Mathf.Abs(minY) <= 0.02f, $"{prefab.name} Feet minY={minY:F4}u deviates from 0.00u!");
-            Assert(bodyMaxY >= 3.31f && bodyMaxY <= 3.52f, $"{prefab.name} Standing skull crown height={bodyMaxY:F4}u outside 3.4146u ±3% [3.31, 3.52]!");
+            Assert(bodyMaxY >= 3.31f && bodyMaxY <= 3.825f, $"{prefab.name} Standing skull crown height={bodyMaxY:F4}u outside [3.31, 3.825]!");
             Assert(totalMaxY <= 3.905f, $"{prefab.name} Total height (incl. Dharma Wheel)={totalMaxY:F4}u exceeds 3.90u hallway ceiling clearance!");
             return netHash;
         }

@@ -15,7 +15,11 @@ namespace MahoragaLC.AI
         Explosion = 4,
         Other = 5,
         OldBirdMissile = 6,
-        EnemyMelee = 7
+        EnemyMelee = 7,
+        Shovel = 8,
+        Knife = 9,
+        EquipmentStun = 10,
+        VehicleImpact = 11
     }
 
     /// <summary>
@@ -225,7 +229,8 @@ namespace MahoragaLC.AI
     /// </summary>
     public sealed class MahoragaAdaptationSystem
     {
-        public const int CategoryCount = 8;
+        public const int FirstCustomWeaponCategory = 12;
+        public const int CategoryCount = 31; // The adaptation mask uses signed 32-bit network fields.
         public const float AdaptingArmorMultiplier = 0.25f;
         public const float ZapFreshEngagementGapSeconds = 1.5f;
         public const float ZapSustainedExposureSeconds = 3.0f;
@@ -235,7 +240,7 @@ namespace MahoragaLC.AI
         private readonly int[] _stages = new int[CategoryCount];
         private int _adaptedMask;
         private int _wheelStepCount;
-        private float _fractionalDamageBuffer;
+        private readonly float[] _fractionalDamageBuffer = new float[CategoryCount];
         private float _lastZapEventTime = -999f;
         private float _lastZapExposureTime = -999f;
         private float _lastExplosionHitTime = -999f;
@@ -302,8 +307,14 @@ namespace MahoragaLC.AI
             bool heldIsShotgun,
             bool recentExplosionNearby,
             bool recentOldBirdMissileNearby = false,
-            bool enemyAttackerSuspected = false)
+            bool enemyAttackerSuspected = false,
+            bool allowUnidentifiedShotgun = true)
         {
+            if (hitID == 331)
+            {
+                return AdaptationCategory.VehicleImpact;
+            }
+
             bool playerWeaponEvidence = heldIsShovelOrKnife || heldIsShotgun;
 
             // A tracked Old Bird missile blast wins over generic explosions (they are a separate category).
@@ -325,7 +336,7 @@ namespace MahoragaLC.AI
             }
 
             // Shotgun blasts deal 1..5 force; anything bigger without a shotgun (e.g. Cruiser, force 12) is "Other".
-            if (hasAttacker && (heldIsShotgun || (hitID == -1 && force >= 2 && force <= 5)))
+            if (hasAttacker && (heldIsShotgun || (allowUnidentifiedShotgun && hitID == -1 && force >= 2 && force <= 5)))
             {
                 return AdaptationCategory.Shotgun;
             }
@@ -351,7 +362,7 @@ namespace MahoragaLC.AI
             bool isCurrentlyAdapting,
             AdaptationSettings settings,
             float now,
-            int hpFloor = 0)
+            int hpFloor = 0, int minimumDamage = 0)
         {
             if (category == AdaptationCategory.Explosion || category == AdaptationCategory.OldBirdMissile)
             {
@@ -383,11 +394,13 @@ namespace MahoragaLC.AI
                 }
                 else
                 {
-                    _fractionalDamageBuffer += safeForce * mult;
-                    effectiveDamage = (int)Math.Floor(_fractionalDamageBuffer + 1e-5f);
-                    _fractionalDamageBuffer = Math.Max(0f, _fractionalDamageBuffer - effectiveDamage);
+                    _fractionalDamageBuffer[idx] += safeForce * mult;
+                    effectiveDamage = (int)Math.Floor(_fractionalDamageBuffer[idx] + 1e-5f);
+                    _fractionalDamageBuffer[idx] = Math.Max(0f, _fractionalDamageBuffer[idx] - effectiveDamage);
                 }
             }
+
+            effectiveDamage = Math.Max(effectiveDamage, Math.Min(rawForce, minimumDamage));
 
             // Optional protection floor (e.g. a single Old Bird can never finish Mahoraga): clips the damage, never heals.
             if (hpFloor > 0 && currentHP - effectiveDamage < hpFloor)

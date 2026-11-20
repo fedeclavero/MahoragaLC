@@ -3,7 +3,7 @@ using MahoragaLC.AI;
 
 namespace MahoragaLC.Config
 {
-    /// <summary>[Summoning], [Hunting], and [ShadowAmbush] sections (kept in their own partial to stay separate from [Combat]).</summary>
+    /// <summary>[Summoning] and [ShadowAmbush] sections (kept in their own partial to stay separate from [Combat]).</summary>
     public sealed partial class MahoragaConfig
     {
         // [Summoning]
@@ -12,10 +12,6 @@ namespace MahoragaLC.Config
         public ConfigEntry<bool> SummonCameraShake { get; private set; } = null!;
 
         // [Hunting]
-        public ConfigEntry<bool> HuntPlayers { get; private set; } = null!;
-        public ConfigEntry<bool> HuntPlayersOutdoors { get; private set; } = null!;
-        public ConfigEntry<float> HuntRepathSeconds { get; private set; } = null!;
-
         // [ShadowAmbush]
         public ConfigEntry<bool> EnableShadowAmbush { get; private set; } = null!;
         public ConfigEntry<float> ShadowAmbushMinTime { get; private set; } = null!;
@@ -45,31 +41,11 @@ namespace MahoragaLC.Config
                 true,
                 "Shake the camera of nearby players during the emergence boom and the roar of the summoning.");
 
-            HuntPlayers = cfg.Bind(
-                "Hunting",
-                "HuntPlayers",
-                true,
-                "If true, indoors while it has no line of sight Mahoraga walks toward the closest reachable living player instead of wandering between AI nodes. If false it only patrols indoors.");
-
-            HuntPlayersOutdoors = cfg.Bind(
-                "Hunting",
-                "HuntPlayersOutdoors",
-                false,
-                "If false (default), outdoors Mahoraga wanders naturally and only chases players it genuinely sees (line of sight) or hears (noise investigation). If true, outdoors Mahoraga also hunts players without line of sight like indoors.");
-
-            HuntRepathSeconds = cfg.Bind(
-                "Hunting",
-                "HuntRepathSeconds",
-                2.5f,
-                new ConfigDescription(
-                    "How often (seconds) the hunt re-selects the closest reachable player and recomputes its destination.",
-                    new AcceptableValueRange<float>(1.0f, 10.0f)));
-
             EnableShadowAmbush = cfg.Bind(
                 "ShadowAmbush",
                 "EnableShadowAmbush",
                 true,
-                "If true, late in the day when Mahoraga has not seen any player for a while (and no living Old Bird is in its domain), it dives into a shadow pool and re-emerges directly in front of a living player.");
+                "If true, late in the day Mahoraga can dive into a shadow pool and re-emerge at a recent reachable sound once it has lost contact and there are no Old Birds in range.");
 
             ShadowAmbushMinTime = cfg.Bind(
                 "ShadowAmbush",
@@ -84,7 +60,7 @@ namespace MahoragaLC.Config
                 "ShadowAmbushLostSightDelay",
                 12.0f,
                 new ConfigDescription(
-                    "Seconds without line of sight to any player before Mahoraga considers diving into the shadows for an ambush.",
+                    "Seconds since contact with a player before Mahoraga considers diving into the shadows for an ambush.",
                     new AcceptableValueRange<float>(2.0f, 120.0f)));
 
             ShadowAmbushCooldown = cfg.Bind(
@@ -100,7 +76,7 @@ namespace MahoragaLC.Config
                 "ShadowAmbushSubmergeDuration",
                 SubmergeTimeline.ReferenceDuration,
                 new ConfigDescription(
-                    "Duration in seconds of the downward shadow-dive animation before warping to emerge in front of a player.",
+                    "Duration in seconds of the downward shadow-dive animation before emerging at the recorded sound.",
                     new AcceptableValueRange<float>(SubmergeTimeline.MinDuration, SubmergeTimeline.MaxDuration)));
         }
     }

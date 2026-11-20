@@ -1,9 +1,6 @@
-using System;
-using System.Collections.Generic;
-
 namespace MahoragaLC.AI
 {
-    /// <summary>Pure (Unity-free) helpers for the hunt behaviour so they can be unit tested.</summary>
+    /// <summary>Domain checks for game positions.</summary>
     public static class HuntLogic
     {
         /// <summary>
@@ -16,64 +13,6 @@ namespace MahoragaLC.AI
         public static bool IsOutsideAt(float y, bool currentlyOutside)
         {
             return currentlyOutside ? y >= -100f : y > -80f;
-        }
-
-        /// <summary>
-        /// True when passive non-LOS player hunting is allowed in the current domain.
-        /// Indoors honors <paramref name="huntPlayersIndoors"/>; outdoors requires explicit opt-in via
-        /// <paramref name="huntPlayersOutdoors"/> so outdoor Mahoraga relies on realistic sight &amp; hearing by default.
-        /// </summary>
-        public static bool ShouldHuntWithoutLineOfSight(bool isOutside, bool huntPlayersIndoors, bool huntPlayersOutdoors)
-        {
-            return isOutside ? huntPlayersOutdoors : huntPlayersIndoors;
-        }
-
-        public readonly struct Candidate
-        {
-            public readonly int Id;
-            public readonly float Distance;
-
-            public Candidate(int id, float distance)
-            {
-                Id = id;
-                Distance = distance;
-            }
-        }
-
-        /// <summary>
-        /// Orders candidates nearest-first and drops the ones currently blocked (unreachable / stuck).
-        /// Returns at most <paramref name="maxCount"/> entries.
-        /// </summary>
-        public static List<Candidate> OrderCandidates(
-            IList<Candidate> candidates,
-            Func<int, bool> isBlocked,
-            int maxCount)
-        {
-            var result = new List<Candidate>(candidates.Count);
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                if (!isBlocked(candidates[i].Id))
-                {
-                    result.Add(candidates[i]);
-                }
-            }
-
-            result.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-            if (result.Count > maxCount)
-            {
-                result.RemoveRange(maxCount, result.Count - maxCount);
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// True when the agent has made (almost) no progress over the observation window although it still has
-        /// a long way to go, i.e. it is wedged against geometry.
-        /// </summary>
-        public static bool IsStuck(float movedMeters, float windowSeconds, float remainingDistance)
-        {
-            return windowSeconds >= 2.5f && movedMeters < 0.6f && remainingDistance > 3.0f;
         }
     }
 }

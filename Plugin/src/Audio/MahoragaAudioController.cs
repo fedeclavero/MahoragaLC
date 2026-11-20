@@ -51,6 +51,7 @@ namespace MahoragaLC.Audio
                 AI = GetComponent<MahoragaAI>();
             }
             ResolveFallbackReferences();
+            RouteSoundEffects();
             MahoragaMusicCoordinator.Register(this);
         }
 
@@ -98,6 +99,29 @@ namespace MahoragaLC.Audio
         private static AudioClip? GetCachedClip(string clipName)
         {
             return Plugin.CachedAudioClips.TryGetValue(clipName, out AudioClip clip) ? clip : null;
+        }
+
+        private void RouteSoundEffects()
+        {
+            if (SoundManager.Instance == null || SoundManager.Instance.diageticMixer == null)
+            {
+                return;
+            }
+
+            var groups = SoundManager.Instance.diageticMixer.FindMatchingGroups("SFX");
+            if (groups.Length == 0)
+            {
+                return;
+            }
+
+            if (voiceSource != null && voiceSource.outputAudioMixerGroup == null)
+            {
+                voiceSource.outputAudioMixerGroup = groups[0];
+            }
+            if (bodySource != null && bodySource.outputAudioMixerGroup == null)
+            {
+                bodySource.outputAudioMixerGroup = groups[0];
+            }
         }
 
         public void TickStrideFootsteps(float horizontalDistanceMoved, bool isChasing)

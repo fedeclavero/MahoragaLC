@@ -8,14 +8,7 @@ using UnityEngine.AI;
 
 namespace MahoragaLC.AI
 {
-    /// <summary>
-    /// Retaliation (players and Old Birds), the EngagingEnemy state (exclusively for RadMechAI Old Birds),
-    /// attack resolution against Old Birds, and the damage/adaptation pipeline. Everything here is server-authoritative;
-    /// clients only receive effects through RPCs.
-    ///
-    /// Target exclusivity: Mahoraga attacks ONLY Players and RadMechAI (Old Birds) — never any other enemy,
-    /// not even in self-defense, while blocked, or while idling.
-    /// </summary>
+    /// <summary>Server-side damage and enemy engagement, including reactive fights and Old Bird hunts.</summary>
     public partial class MahoragaAI
     {
         private const float EngageEntryRangeBase = 2.6f;
@@ -29,9 +22,12 @@ namespace MahoragaLC.AI
         private readonly AggroTable _enemyAggro = new AggroTable(5f);
         private readonly CooldownSet _ignoredEnemies = new CooldownSet();
         private readonly DistinctAttackerWindow _oldBirdAttackers = new DistinctAttackerWindow();
+        private readonly Dictionary<Type, AdaptationCategory> _customWeaponCategories = new Dictionary<Type, AdaptationCategory>();
+        private readonly CoordinatedShovelStrike _shovelStrike = new CoordinatedShovelStrike();
+        private int _oldBirdVolleyStage;
+        private float _oldBirdVolleyStartedAt = float.NegativeInfinity;
         private readonly RegenerationTracker _regen = new RegenerationTracker();
         private readonly Dictionary<int, EnemyAI> _aggressorLookup = new Dictionary<int, EnemyAI>();
-        private readonly Dictionary<int, float> _enemyLastHitTime = new Dictionary<int, float>();
         private readonly List<EnemyAI> _pushes = new List<EnemyAI>();
         private Func<int, bool>? _acceptEnemyAggressorCache;
         private Func<int, bool>? _acceptPlayerAggressorCache;
@@ -73,8 +69,9 @@ namespace MahoragaLC.AI
             _enemyAggro.Clear();
             _ignoredEnemies.Clear();
             _oldBirdAttackers.Clear();
+            _shovelStrike.Clear();
+            _customWeaponCategories.Clear();
             _aggressorLookup.Clear();
-            _enemyLastHitTime.Clear();
             _regen.Reset();
 
             _enemyTarget = null;
@@ -141,7 +138,6 @@ namespace MahoragaLC.AI
                 for (int i = 0; i < stale.Count; i++)
                 {
                     _aggressorLookup.Remove(stale[i]);
-                    _enemyLastHitTime.Remove(stale[i]);
                 }
             }
         }
@@ -157,46 +153,51 @@ namespace MahoragaLC.AI
             AdaptationSettings settings = cfg != null ? cfg.Adaptation : _fallbackAdaptation;
             int maxHp = cfg != null ? cfg.MaxHP.Value : 18;
 
-            bool heldIsShovelOrKnife = playerWhoHit != null &&
-                (playerWhoHit.currentlyHeldObjectServer is Shovel || playerWhoHit.currentlyHeldObjectServer is KnifeItem);
-            bool heldIsShotgun = playerWhoHit != null && playerWhoHit.currentlyHeldObjectServer is ShotgunItem;
-            bool recentExplosion = (now - _lastHitFromExplosionTime <= 0.15f)
-                || ExplosionTrackingPatch.HasRecentExplosionNear(transform.position, now, extraMargin: 5.0f + 1.5f * ScaleFactor);
-            bool recentMissile = ExplosionTrackingPatch.HasRecentMissileNear(transform.position, now, out EnemyAI? missileSource, extraMargin: 2.0f + 2.0f * ScaleFactor);
-
-            // Used ONLY to classify AdaptationCategory.EnemyMelee for Dharma Wheel adaptation; never triggers retaliation against non-Old-Bird enemies.
-            EnemyAI? suspectedEnemy = null;
-            if (playerWhoHit == null && !recentMissile && !recentExplosion && !(force == 6 && hitID == -1))
+            if (force <= 0)
             {
-                suspectedEnemy = FindSuspectedEnemyAttackerServer();
+                return;
             }
 
-            AdaptationCategory category = MahoragaAdaptationSystem.ClassifyDamage(
-                hitID,
-                force,
-                hasAttacker: playerWhoHit != null,
-                heldIsShovelOrKnife: heldIsShovelOrKnife,
-                heldIsShotgun: heldIsShotgun,
-                recentExplosionNearby: recentExplosion,
-                recentOldBirdMissileNearby: recentMissile,
-                enemyAttackerSuspected: suspectedEnemy != null);
+            RadMechAI? missileSource = playerWhoHit == null ? ExplosionTrackingPatch.MissileSource : null;
+            EnemyAI? contactSource = playerWhoHit == null ? EnemyHitSourcePatch.GetAttacker(this) : null;
+            bool isExplosion = playerWhoHit == null && ExplosionTrackingPatch.InExplosion;
+            AdaptationCategory category = ResolveDamageCategory(playerWhoHit, hitID, force,
+                isExplosion, missileSource != null, contactSource != null);
 
-            // A single Old Bird can never finish Mahoraga: its missiles stop at an HP floor unless a whole flock is shooting.
             int hpFloor = 0;
-            if (category == AdaptationCategory.OldBirdMissile)
+            if (category == AdaptationCategory.Shovel && playerWhoHit != null)
             {
-                _oldBirdAttackers.Register(missileSource != null ? missileSource.GetInstanceID() : 0, now);
-                int required = cfg != null ? cfg.OldBirdsRequiredToKill.Value : 5;
-                float window = cfg != null ? cfg.OldBirdKillWindowSeconds.Value : 6f;
-                if (_oldBirdAttackers.Count(now, window) < required)
+                if (playerWhoHit.isPlayerControlled && !playerWhoHit.isPlayerDead &&
+                    _shovelStrike.Register(playerWhoHit.playerClientId, now, _adaptation.GetStage(category)))
                 {
-                    float frac = cfg != null ? cfg.OldBirdSoloHpFloorFraction.Value : 0.30f;
-                    hpFloor = Mathf.Max(1, Mathf.RoundToInt(maxHp * frac));
+                    enemyHP = 0;
+                    KillEnemyOnOwnerClient();
+                    return;
+                }
+                hpFloor = 1;
+            }
+
+            bool coordinatedOldBirds = false;
+            if (category == AdaptationCategory.OldBirdMissile && missileSource != null)
+            {
+                float window = cfg != null ? cfg.OldBirdKillWindowSeconds.Value : 6f;
+                if (now - _oldBirdVolleyStartedAt > window)
+                {
+                    _oldBirdAttackers.Clear();
+                    _oldBirdVolleyStartedAt = now;
+                    _oldBirdVolleyStage = _adaptation.GetStage(category);
+                }
+                _oldBirdAttackers.Register(missileSource.GetInstanceID(), now);
+                int required = (cfg != null ? cfg.OldBirdVolleyBaseCount.Value : 3) + _oldBirdVolleyStage;
+                coordinatedOldBirds = _oldBirdAttackers.Count(now, window) >= required;
+                if (!coordinatedOldBirds)
+                {
+                    hpFloor = Mathf.Max(1, Mathf.RoundToInt(maxHp * (cfg != null ? cfg.OldBirdSoloHpFloorFraction.Value : 0.30f)));
                 }
             }
 
             bool isAdapting = currentBehaviourStateIndex == (int)MahoragaState.Adapting;
-            DamageEvaluation eval = _adaptation.EvaluateDamage(category, force, enemyHP, maxHp, isAdapting, settings, now, hpFloor);
+            DamageEvaluation eval = _adaptation.EvaluateDamage(category, force, enemyHP, maxHp, isAdapting, settings, now, hpFloor, minimumDamage: coordinatedOldBirds ? force : 0);
             enemyHP = eval.FinalHP;
             _lastDamageTakenTime = now;
 
@@ -206,11 +207,10 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            // ---- Retaliation bookkeeping (Players and RadMechAI Old Birds only) --------------------
-            EnemyAI? enemyAttacker = missileSource != null && recentMissile ? missileSource : suspectedEnemy;
-            if (enemyAttacker is RadMechAI && (cfg == null || cfg.FightOldBirds.Value))
+            EnemyAI? enemyAttacker = missileSource != null ? missileSource : contactSource;
+            if (enemyAttacker != null && (enemyAttacker is not RadMechAI || cfg == null || cfg.FightOldBirds.Value))
             {
-                RegisterEnemyAggression(enemyAttacker, recentMissile ? 3f : 1f, now);
+                RegisterEnemyAggression(enemyAttacker, missileSource != null ? 3f : 1f, now);
             }
 
             if (playerWhoHit != null && PlayerIsTargetable(playerWhoHit))
@@ -274,14 +274,57 @@ namespace MahoragaLC.AI
             }
         }
 
+        private AdaptationCategory ResolveDamageCategory(PlayerControllerB? player, int hitId, int force,
+            bool isExplosion, bool isOldBirdMissile, bool isEnemyMelee)
+        {
+            GrabbableObject? held = player?.currentlyHeldObjectServer;
+            if (hitId == 1 && held is Shovel)
+            {
+                return AdaptationCategory.Shovel;
+            }
+            if (hitId == 5 && held is KnifeItem)
+            {
+                return AdaptationCategory.Knife;
+            }
+
+            AdaptationCategory category = MahoragaAdaptationSystem.ClassifyDamage(hitId, force, player != null,
+                heldIsShovelOrKnife: false, heldIsShotgun: held is ShotgunItem,
+                recentExplosionNearby: isExplosion, recentOldBirdMissileNearby: isOldBirdMissile,
+                enemyAttackerSuspected: isEnemyMelee, allowUnidentifiedShotgun: false);
+            if (category != AdaptationCategory.Other || held == null || held.GetType().Assembly == typeof(GrabbableObject).Assembly)
+            {
+                return category;
+            }
+
+            Type itemType = held.GetType();
+            if (_customWeaponCategories.TryGetValue(itemType, out AdaptationCategory custom))
+            {
+                return custom;
+            }
+
+            int next = MahoragaAdaptationSystem.FirstCustomWeaponCategory + _customWeaponCategories.Count;
+            if (next >= MahoragaAdaptationSystem.CategoryCount)
+            {
+                return category;
+            }
+
+            custom = (AdaptationCategory)next;
+            _customWeaponCategories.Add(itemType, custom);
+            return custom;
+        }
+
         private void RegisterPlayerAggression(PlayerControllerB player, int force, float now)
         {
             _playerAggro.Add((int)player.playerClientId, 1f + Mathf.Min(Mathf.Max(force, 0), 6) * 0.25f, now);
+            if (targetPlayer == player)
+            {
+                RememberPlayerContact(player.transform.position);
+            }
         }
 
         private void RegisterEnemyAggression(EnemyAI enemy, float weight, float now)
         {
-            if (!(enemy is RadMechAI))
+            if (enemy == this || enemy is MahoragaAI || enemy.isEnemyDead || enemy.isOutside != isOutside)
             {
                 return;
             }
@@ -289,57 +332,13 @@ namespace MahoragaLC.AI
             int id = enemy.GetInstanceID();
             _enemyAggro.Add(id, weight, now);
             _aggressorLookup[id] = enemy;
-            _enemyLastHitTime[id] = now;
         }
-
-        /// <summary>Nearest living, non-Mahoraga enemy whose body is within reach (used strictly for EnemyMelee adaptation classification).</summary>
-        private EnemyAI? FindSuspectedEnemyAttackerServer()
-        {
-            if (RoundManager.Instance == null)
-            {
-                return null;
-            }
-
-            List<EnemyAI> all = RoundManager.Instance.SpawnedEnemies;
-            EnemyAI? best = null;
-            float bestDist = 6.5f * ScaleFactor;
-            Vector3 chest = transform.position + Vector3.up * 1.4f * ScaleFactor;
-            for (int i = 0; i < all.Count; i++)
-            {
-                EnemyAI e = all[i];
-                if (e == null || e == this || e is MahoragaAI || e.isEnemyDead)
-                {
-                    continue;
-                }
-
-                if (!TryGetEnemySurfacePoint(e, chest, null, out Vector3 p))
-                {
-                    continue;
-                }
-
-                float d = Vector3.Distance(chest, p);
-                if (d < bestDist)
-                {
-                    bestDist = d;
-                    best = e;
-                }
-            }
-
-            return best;
-        }
-
-        // =====================================================================
-        // Priorities: Old Birds (#1) -> Players (#2)
-        // =====================================================================
 
         private bool IsEnemyEngageable(EnemyAI? e)
         {
-            return e is RadMechAI rad
-                && rad != this
-                && !rad.isEnemyDead
-                && rad.isOutside == isOutside
-                && !IsDestructionPending(rad)
-                && !_ignoredEnemies.IsBlocked(rad.GetInstanceID(), Time.time);
+            return e != null && e is not MahoragaAI && !e.isEnemyDead && e.isOutside == isOutside
+                && (e is not RadMechAI rad || !IsDestructionPending(rad))
+                && !_ignoredEnemies.IsBlocked(e.GetInstanceID(), Time.time);
         }
 
         private PlayerControllerB? GetRetaliationPlayer(float minWeight = 0f)
@@ -360,7 +359,7 @@ namespace MahoragaLC.AI
             {
                 return retaliation;
             }
-            return fallback != null && PlayerIsTargetable(fallback) ? fallback : null;
+            return fallback != null && CanSenseByProximity(fallback) ? fallback : null;
         }
 
         /// <summary>
@@ -398,12 +397,6 @@ namespace MahoragaLC.AI
             return true;
         }
 
-        /// <summary>True while the current chase target is an active aggressor: keeps the generic "closer player" pivot from stealing it.</summary>
-        private bool CurrentTargetIsAggressor()
-        {
-            return targetPlayer != null && _playerAggro.Has((int)targetPlayer.playerClientId, Time.time);
-        }
-
         /// <summary>
         /// Called every AI interval while Patrolling / Investigating / Chasing.
         /// Old Bird Priority #1: if FightOldBirds is enabled and any living engageable RadMechAI exists in Mahoraga's domain
@@ -412,35 +405,25 @@ namespace MahoragaLC.AI
         /// </summary>
         private bool EvaluateEnemyEngagementServer(MahoragaConfig? cfg)
         {
-            if (cfg != null && !cfg.FightOldBirds.Value)
-            {
-                return false;
-            }
-
             float now = Time.time;
-            float seekRange = cfg != null ? cfg.OldBirdSeekRange.Value : 250f;
-            float aggressorRange = Mathf.Max(EnemyAggressorMaxDistance, seekRange);
             Vector3 chest = transform.position + Vector3.up * 1.4f * ScaleFactor;
+            PlayerControllerB? resumePlayer = ChoosePlayerAfterAction(targetPlayer);
 
-            PlayerControllerB? resumePlayer = currentBehaviourStateIndex == (int)MahoragaState.Chasing && targetPlayer != null && PlayerIsTargetable(targetPlayer)
-                ? targetPlayer
-                : ChoosePlayerAfterAction(null);
-
-            // 1. Prefer an Old Bird that recently attacked Mahoraga.
-            if (_enemyAggro.TryGetTop(now, out int aggId, out _, _acceptEnemyAggressor) &&
-                _aggressorLookup.TryGetValue(aggId, out EnemyAI? aggressor) &&
-                aggressor is RadMechAI aggOldBird &&
-                DistanceToEnemySurface(aggOldBird, chest) <= aggressorRange)
+            if (cfg == null || cfg.FightOldBirds.Value)
             {
-                EnterEngageEnemyStateServer(aggOldBird, resumePlayer);
-                return true;
+                RadMechAI? hunted = FindNearestOldBirdServer(cfg, chest, out _);
+                if (hunted != null)
+                {
+                    EnterEngageEnemyStateServer(hunted, resumePlayer);
+                    return true;
+                }
             }
 
-            // 2. Otherwise immediately hunt the nearest living Old Bird in our domain within OldBirdSeekRange.
-            RadMechAI? hunted = FindNearestOldBirdServer(cfg, chest, out _);
-            if (hunted != null)
+            if (_enemyAggro.TryGetTop(now, out int id, out _, _acceptEnemyAggressor) &&
+                _aggressorLookup.TryGetValue(id, out EnemyAI? aggressor) && aggressor is not RadMechAI &&
+                DistanceToEnemySurface(aggressor, chest) <= EnemyAggressorMaxDistance)
             {
-                EnterEngageEnemyStateServer(hunted, resumePlayer);
+                EnterEngageEnemyStateServer(aggressor, resumePlayer);
                 return true;
             }
 
@@ -497,12 +480,12 @@ namespace MahoragaLC.AI
             return oldBird.transform.position;
         }
 
-        private void EnterEngageEnemyStateServer(RadMechAI oldBird, PlayerControllerB? resumePlayer)
+        private void EnterEngageEnemyStateServer(EnemyAI enemy, PlayerControllerB? resumePlayer)
         {
             _forcingDoor = null;
             StopSearch(currentSearch);
-            _enemyTarget = oldBird;
-            _enemyTargetDetectors = oldBird.GetComponentsInChildren<EnemyAICollisionDetect>(includeInactive: false);
+            _enemyTarget = enemy;
+            _enemyTargetDetectors = enemy.GetComponentsInChildren<EnemyAICollisionDetect>(includeInactive: false);
             _engageStartTime = Time.time;
             _engageUnreachableTimer = 0f;
             _engageRepathCounter = 0;
@@ -511,14 +494,25 @@ namespace MahoragaLC.AI
             movingTowardsTargetPlayer = false;
 
             SwitchBehaviourAndSyncServer(MahoragaState.EngagingEnemy, -1);
-            Vector3 approachPos = GetOldBirdApproachPosition(oldBird, out float sampleRadius);
+            Vector3 approachPos = GetEnemyApproach(enemy, out float sampleRadius);
             SetSafeDestinationServer(approachPos, sampleRadius);
+        }
+
+        private Vector3 GetEnemyApproach(EnemyAI enemy, out float sampleRadius)
+        {
+            if (enemy is RadMechAI bird)
+            {
+                return GetOldBirdApproachPosition(bird, out sampleRadius);
+            }
+            sampleRadius = 2f;
+            return enemy.transform.position;
         }
 
         private void RunEngageEnemyInterval(MahoragaConfig? cfg)
         {
             float now = Time.time;
-            RadMechAI? oldBird = _enemyTarget as RadMechAI;
+            EnemyAI? enemy = _enemyTarget;
+            RadMechAI? oldBird = enemy as RadMechAI;
             float baseChase = cfg != null ? cfg.ChaseSpeed.Value : 6.2f;
             float bonusPerAdapt = cfg != null ? cfg.ChaseSpeedPerAdaptation.Value : 0.35f;
             if (agent != null && agent.enabled)
@@ -527,16 +521,14 @@ namespace MahoragaLC.AI
             }
             openDoorSpeedMultiplier = 1.65f;
 
-            bool valid = oldBird != null
-                && !oldBird.isEnemyDead
-                && oldBird.isOutside == isOutside
-                && !IsDestructionPending(oldBird);
+            bool valid = IsEnemyEngageable(enemy) && (oldBird != null ||
+                (enemy != null && _enemyAggro.Has(enemy.GetInstanceID(), now)));
             Vector3 chest = transform.position + Vector3.up * 1.4f * ScaleFactor;
-            float dist = valid ? DistanceToEnemySurface(oldBird!, chest) : 0f;
+            float dist = valid ? DistanceToEnemySurface(enemy!, chest) : 0f;
 
             float seekRange = cfg != null ? cfg.OldBirdSeekRange.Value : 250f;
-            float maxSeconds = cfg != null ? cfg.OldBirdEngageMaxSeconds.Value : 120f;
-            float maxDistance = Mathf.Max(EnemyMaxChaseDistance, seekRange + 40f);
+            float maxSeconds = oldBird != null ? (cfg != null ? cfg.OldBirdEngageMaxSeconds.Value : 120f) : 15f;
+            float maxDistance = oldBird != null ? Mathf.Max(EnemyMaxChaseDistance, seekRange + 40f) : EnemyAggressorMaxDistance;
 
             EngageVerdict verdict = EnemyEngagementPolicy.EvaluateOldBird(
                 valid,
@@ -558,7 +550,7 @@ namespace MahoragaLC.AI
                 return;
             }
 
-            Vector3 approachPos = GetOldBirdApproachPosition(oldBird!, out float sampleRadius);
+            Vector3 approachPos = GetEnemyApproach(enemy!, out float sampleRadius);
             bool pathOk = SetSafeDestinationServer(approachPos, sampleRadius);
 
             bool validatePath = (_engageRepathCounter++ % 3) == 0;
@@ -579,13 +571,13 @@ namespace MahoragaLC.AI
             }
 
             // Swing when in horizontal and vertical reach (never swing at a flying Old Bird high in the sky).
-            if (_attackCooldownTimer <= 0f && !oldBird!.inFlyingMode && dist <= EngageEntryRangeBase * ScaleFactor)
+            if (!_jumping && _attackCooldownTimer <= 0f && (oldBird == null || !oldBird.inFlyingMode) && dist <= EngageEntryRangeBase * ScaleFactor)
             {
-                TryGetEnemySurfacePoint(oldBird, chest, _enemyTargetDetectors, out Vector3 surface);
+                TryGetEnemySurfacePoint(enemy!, chest, _enemyTargetDetectors, out Vector3 surface);
                 if (Mathf.Abs(surface.y - chest.y) <= VerticalHitTolerance * ScaleFactor * 1.4f
-                    && HasClearStrikePath(transform.position + Vector3.up * 1.8f * ScaleFactor, surface, oldBird))
+                    && HasClearStrikePath(transform.position + Vector3.up * 1.8f * ScaleFactor, surface, enemy))
                 {
-                    EnterAttackStateServer(ShouldUseSlamAttack(forceSlam: false), oldBird);
+                    EnterAttackStateServer(ShouldUseSlamAttack(forceSlam: false), enemy);
                 }
             }
         }
@@ -624,7 +616,7 @@ namespace MahoragaLC.AI
             }
 
             PlayerControllerB? next = ChoosePlayerAfterAction(resume)
-                ?? FindBestVisibleOrNearbyPlayer(viewHalfAngle: 120f, sightRange: 30f, proximityRadius: 8f);
+                ?? FindNearbyPlayer();
             if (next != null)
             {
                 EnterChaseStateServer(next);
@@ -640,7 +632,7 @@ namespace MahoragaLC.AI
         {
             EnemyAI? e = _attackEnemyTarget;
             _attackEnemyTarget = null;
-            if (!(e is RadMechAI rad) || rad.isEnemyDead || _enemyTarget != rad || rad.isOutside != isOutside || IsDestructionPending(rad))
+            if (!IsEnemyEngageable(e) || _enemyTarget != e)
             {
                 if (_enemyTarget != null)
                 {
@@ -661,6 +653,20 @@ namespace MahoragaLC.AI
         /// <summary>Returns true if at least one Old Bird was hit. Wall line-of-sight is checked per target.</summary>
         private bool ResolveEnemyHitsServer(bool isSlam, float reach, Vector3 rayOrigin, MahoragaConfig? cfg)
         {
+            if (_attackEnemyTarget is EnemyAI aggressor && aggressor is not RadMechAI)
+            {
+                if (!IsEnemyEngageable(aggressor) || !_enemyAggro.Has(aggressor.GetInstanceID(), Time.time) ||
+                    !TryGetEnemySurfacePoint(aggressor, rayOrigin, _enemyTargetDetectors, out Vector3 surface) ||
+                    (surface - rayOrigin).sqrMagnitude > reach * reach ||
+                    !HasClearStrikePath(rayOrigin, surface, aggressor))
+                {
+                    return false;
+                }
+
+                aggressor.HitEnemyOnLocalClient(isSlam ? 3 : 2, transform.forward, null, playHitSFX: true);
+                return true;
+            }
+
             if (RoundManager.Instance == null || (cfg != null && !cfg.FightOldBirds.Value))
             {
                 return false;

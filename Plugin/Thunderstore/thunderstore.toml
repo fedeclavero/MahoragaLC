@@ -7,8 +7,8 @@ repository = "https://thunderstore.io"
 [package]
 namespace = "MahoragaTeam"
 name = "MahoragaLC"
-versionNumber = "1.0.0"
-description = "Adds Eight-Handled Sword Divergent Sila Divine General Mahoraga as an adapting apex boss enemy for Lethal Company with dynamic proximity music."
+versionNumber = "1.1.0"
+description = "Adds Mahoraga from Jujutsu Kaisen to Lethal Company. Fight an adapting boss with a turning Dharma Wheel, shadow ambushes, and Old Bird battles."
 websiteUrl = "https://github.com/fedeclavero/MahoragaLC"
 containsNsfwContent = false
 
@@ -17,7 +17,7 @@ BepInEx-BepInExPack = "5.4.2305"
 Evaisa-LethalLib = "1.2.0"
 
 [build]
-icon = "./icon.png"
+icon = "./icon-mahoraga-lc.png"
 readme = "./README.md"
 outdir = "./Packages"
 
@@ -26,7 +26,7 @@ source = "../bin/Release/netstandard2.1/Fede.MahoragaLC.dll"
 target = "BepInEx/plugins/Fede-MahoragaLC/"
 
 [[build.copy]]
-source = "../../UnityProject/AssetBundles/StandaloneWindows64/mahoraga_assets"
+source = "../../artifacts/thunderstore/mahoraga_assets"
 target = "BepInEx/plugins/Fede-MahoragaLC/"
 
 [[build.copy]]
@@ -37,4 +37,4 @@ target = "/"
 communities = [ "lethal-company", ]
 
 [publish.categories]
-lethal-company = [ "bepinex", "clientside", "serverside", "monsters", "mods", ]
+lethal-company = [ "mods", "monsters", "bepinex", "clientside", "serverside", "ai-generated" ]

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using GameNetcodeStuff;
-using HarmonyLib;
 using MahoragaLC.Config;
 using Unity.Netcode;
 using UnityEngine;
@@ -24,7 +23,8 @@ namespace MahoragaLC.AI
     public partial class MahoragaAI
     {
         private const float OldBirdDestructionDelay = 0.45f;
-        private static readonly FieldInfo? RadMechTargetedThreatColliderField = AccessTools.Field(typeof(RadMechAI), "targetedThreatCollider");
+        private static readonly FieldInfo? RadMechTargetedThreatColliderField = typeof(RadMechAI)
+            .GetField("targetedThreatCollider", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
         private struct PendingDestruction
         {

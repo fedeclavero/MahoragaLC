@@ -1,8 +1,8 @@
 {
   "name": "MahoragaLC",
-  "version_number": "1.0.0",
+  "version_number": "1.1.0",
   "website_url": "https://github.com/fedeclavero/MahoragaLC",
-  "description": "Adds Eight-Handled Sword Divergent Sila Divine General Mahoraga as an adapting apex boss enemy for Lethal Company with dynamic proximity music.",
+  "description": "Adds Mahoraga from Jujutsu Kaisen to Lethal Company. Fight an adapting boss with a turning Dharma Wheel, shadow ambushes, and Old Bird battles.",
   "dependencies": [
     "BepInEx-BepInExPack-5.4.2305",
     "Evaisa-LethalLib-1.2.0"

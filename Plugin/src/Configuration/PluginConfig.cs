@@ -57,7 +57,7 @@ namespace MahoragaLC.Config
         public ConfigEntry<float> OldBirdSeekRange { get; }
         public ConfigEntry<float> OldBirdHitsToDestroy { get; }
         public ConfigEntry<float> OldBirdEngageMaxSeconds { get; }
-        public ConfigEntry<int> OldBirdsRequiredToKill { get; }
+        public ConfigEntry<int> OldBirdVolleyBaseCount { get; }
         public ConfigEntry<float> OldBirdKillWindowSeconds { get; }
         public ConfigEntry<float> OldBirdSoloHpFloorFraction { get; }
         public ConfigEntry<float> OldBirdMissileFullResistance { get; }
@@ -319,12 +319,12 @@ namespace MahoragaLC.Config
                     "Hard cap for one hunt against a single Old Bird before Mahoraga gives up (see DisengageCooldownSeconds).",
                     new AcceptableValueRange<float>(10.0f, 300.0f)));
 
-            OldBirdsRequiredToKill = cfg.Bind(
+            OldBirdVolleyBaseCount = cfg.Bind(
                 "OldBird",
-                "OldBirdsRequiredToKill",
-                5,
+                "OldBirdVolleyBaseCount",
+                3,
                 new ConfigDescription(
-                    "Old Birds that must be hitting Mahoraga within OldBirdKillWindowSeconds before their missiles may push it below the HP floor (fewer Old Birds can never kill it).",
+                    "Base number of distinct Old Birds needed to bypass the HP floor within the volley window. One extra per missile adaptation stage at the start of the volley.",
                     new AcceptableValueRange<int>(1, 10)));
 
             OldBirdKillWindowSeconds = cfg.Bind(
@@ -340,7 +340,7 @@ namespace MahoragaLC.Config
                 "OldBirdSoloHpFloorFraction",
                 0.30f,
                 new ConfigDescription(
-                    "Fraction of MaxHP that Old Bird missiles cannot take Mahoraga below unless OldBirdsRequiredToKill of them attack together.",
+                    "Fraction of MaxHP that Old Bird missiles cannot take Mahoraga below until enough Old Birds attack together.",
                     new AcceptableValueRange<float>(0.05f, 0.90f)));
 
             OldBirdMissileFullResistance = cfg.Bind(

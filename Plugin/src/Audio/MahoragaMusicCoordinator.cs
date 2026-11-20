@@ -201,14 +201,14 @@ namespace MahoragaLC.Audio
 
             if (request.result != UnityWebRequest.Result.Success)
             {
-                Plugin.Logger.LogWarning($"Failed to load CustomMusic override '{Path.GetFileName(filePath)}': {request.error}. Using bundled mahoraga_music_main.");
+                Plugin.Logger.LogWarning($"Failed to load CustomMusic override '{Path.GetFileName(filePath)}': {request.error}.");
                 yield break;
             }
 
             AudioClip? loaded = DownloadHandlerAudioClip.GetContent(request);
             if (loaded == null || loaded.length <= 0.1f)
             {
-                Plugin.Logger.LogWarning($"CustomMusic override '{Path.GetFileName(filePath)}' produced an empty AudioClip. Using bundled mahoraga_music_main.");
+                Plugin.Logger.LogWarning($"CustomMusic override '{Path.GetFileName(filePath)}' produced an empty AudioClip.");
                 yield break;
             }
 
